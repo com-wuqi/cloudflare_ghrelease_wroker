@@ -1,4 +1,4 @@
-# akeymux-release-gate
+# cloudflare_ghrelease_wroker
 
 Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 最新 Release**。
 
