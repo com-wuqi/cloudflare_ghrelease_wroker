@@ -13,6 +13,7 @@ import {
   resolveAllowedRedirect,
   sanitizeRange,
 } from './lib/security';
+import type { MetricEvent, MetricsStub } from './metrics-do';
 import { findAsset, loadRelease, type ReleaseAsset } from './release';
 
 const MAX_REDIRECTS = 3;
@@ -153,7 +154,7 @@ export async function handleDownload(
       return errorResponse(502, 'unexpected_content_type');
     }
 
-    logDownload(request, {
+    const metric = buildMetric(request, {
       repo: release.info.fullName,
       tag: release.info.tag,
       asset: asset.name,
@@ -165,13 +166,16 @@ export async function handleDownload(
       handlerMs: Date.now() - startedAt,
     });
 
+    await recordMetric(env, metric);
+    console.log(JSON.stringify({ evt: 'dl', ...metric }));
+
     return toClientResponse(upstream, asset, method);
   }
 
   return errorResponse(502, 'too_many_redirects');
 }
 
-interface DownloadLogInput {
+interface DownloadInput {
   repo: string;
   tag: string;
   asset: string;
@@ -184,19 +188,28 @@ interface DownloadLogInput {
 }
 
 /**
- * One structured line per authorized download. Consumed by
- * scripts/analyze-logs.mjs to simulate cache hit rates. Never logs IPs,
+ * One structured event per authorized download. Consumed by the admin
+ * dashboard (Durable Object) and scripts/analyze-logs.mjs. Never includes IPs,
  * cookies or tokens; `colo` / `country` / `asn` come from request.cf.
  */
-function logDownload(request: Request, input: DownloadLogInput): void {
+function buildMetric(request: Request, input: DownloadInput): MetricEvent {
   const cf = request.cf as IncomingRequestCfProperties | undefined;
-  console.log(
-    JSON.stringify({
-      evt: 'dl',
-      colo: typeof cf?.colo === 'string' ? cf.colo : 'unknown',
-      country: typeof cf?.country === 'string' ? cf.country : 'unknown',
-      asn: typeof cf?.asn === 'number' ? cf.asn : null,
-      ...input,
-    }),
-  );
+  return {
+    ts: Date.now(),
+    colo: typeof cf?.colo === 'string' ? cf.colo : 'unknown',
+    country: typeof cf?.country === 'string' ? cf.country : 'unknown',
+    asn: typeof cf?.asn === 'number' ? cf.asn : null,
+    ...input,
+  };
+}
+
+/** Best effort: a metrics failure must never affect the download. */
+async function recordMetric(env: Env, event: MetricEvent): Promise<void> {
+  if (!env.METRICS) return;
+  try {
+    const stub = env.METRICS.get(env.METRICS.idFromName('global')) as unknown as MetricsStub;
+    await stub.record(event);
+  } catch (error) {
+    console.error('metrics record failed', error);
+  }
 }

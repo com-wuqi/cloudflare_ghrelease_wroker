@@ -4,6 +4,7 @@
  */
 
 import { APP_JS, STYLE_CSS } from './assets';
+import { handleAdmin } from './admin';
 import { buildClearCookie, readCookie, SESSION_COOKIE, sessionSecretUsable, subjectFor, verifySession, type Session } from './lib/auth';
 import { matchRepo, parseRepoList, pathSegments, safeNextPath } from './lib/security';
 import { handleDownload } from './download';
@@ -81,14 +82,28 @@ function isLocalHost(hostname: string): boolean {
 /**
  * The session cookie is `Secure`, so plain HTTP can never hold a session and
  * would loop between "verify" and "no cookie". Upgrade before any other work.
- * Cloudflare sends `x-forwarded-proto`; fall back to the request URL scheme.
+ *
+ * Only edge-provided signals (X-Forwarded-Proto / CF-Visitor) are trusted, so
+ * `wrangler dev` (which rewrites request.url to the production hostname) and
+ * tests are never redirected.
  */
 function shouldUpgradeToHttps(request: Request, url: URL): boolean {
   if (isLocalHost(url.hostname)) return false;
 
   const forwarded = request.headers.get('x-forwarded-proto');
   if (forwarded) return forwarded.split(',')[0]?.trim().toLowerCase() === 'http';
-  return url.protocol === 'http:';
+
+  const visitor = request.headers.get('cf-visitor');
+  if (visitor) {
+    try {
+      const parsed = JSON.parse(visitor) as { scheme?: unknown };
+      return parsed.scheme === 'http';
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
 }
 
 async function route(request: Request, env: Env): Promise<Response> {
@@ -134,6 +149,9 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (pathname === '/healthz') {
     return jsonResponse({ ok: true });
+  }
+  if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+    return handleAdmin(request, env, url);
   }
   if (pathname === '/logout') {
     return new Response(null, {
@@ -254,3 +272,5 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+export { MetricsDO } from './metrics-do';

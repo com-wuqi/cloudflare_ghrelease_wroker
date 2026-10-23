@@ -111,7 +111,7 @@ describe('session gate', () => {
   });
 
   it('does not expose anything on unknown routes', async () => {
-    const response = await SELF.fetch(`${ORIGIN}/admin/secret`, {
+    const response = await SELF.fetch(`${ORIGIN}/wp-admin/secret`, {
       headers: authHeaders(await sessionCookie()),
     });
     expect(response.status).toBe(404);

@@ -17,6 +17,7 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
  ├─ POST /api/verify {token,next} → 服务端 siteverify → 下发 HMAC 签名 Cookie（默认 60 分钟）
  ├─ GET /                        → 已验证：列出白名单仓库的最新 Release 资产
  ├─ GET /api/releases            → 已验证：JSON 元数据
+ ├─ GET /admin*                  → 独立管理鉴权（ADMIN_TOKEN），不经过下载门禁
  └─ GET /dl/{owner}/{repo}/{asset}
         ├─ 1. 校验签名 Cookie（HMAC-SHA256 + 过期时间 + 可选 IP 绑定）
         ├─ 2. owner/repo 必须在 REPOS 白名单
@@ -42,9 +43,10 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 | 开放重定向 | `next` 只接受站内绝对路径，解析后二次校验 origin |
 | 跨站提交验证 | 校验 `Origin`；siteverify 返回的 `hostname` 必须与本站一致 |
 | 方法滥用 | 仅 `GET` / `HEAD` / `POST`（`POST` 仅用于 `/api/verify`） |
-| HTTP 降级 | 非本地 HTTP 请求一律 308 升级到 HTTPS（保留方法与 body），HTTPS 响应带 HSTS |
+| HTTP 降级 | 边缘标记为 `http` 的请求一律 308 升级到 HTTPS（保留方法与 body），HTTPS 响应带 HSTS；`wrangler dev` 不触发 |
 | 缓存泄露 | 页面与 API `no-store`；下载响应 `private, no-store` |
 | 滥用刷量 | 每 IP 验证 10 次/小时、下载 200 次/小时（KV，best-effort） |
+| 管理页越权 | 独立 `ADMIN_TOKEN` + `a1.` 前缀签名 Cookie（下载会话无法复用）；未配置令牌时 `/admin*` 返回 404；登录按 IP 限流 |
 
 其他默认响应头：`X-Content-Type-Options`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、`X-Robots-Tag: noindex`、CSP。
 
@@ -63,6 +65,7 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 │  ├─ check-config.mjs       部署前检查占位符
 │  ├─ analyze-logs.mjs       缓存收益分析（读 wrangler tail NDJSON）
 │  └─ lib/analyze.mjs        纯函数：解析 / TTL 回放 / 汇总
+├─ shared/stats.mjs          管理页与离线脚本共用的 TTL 回放
 ├─ .github/workflows/ci.yml  CI：check + test
 ├─ SECURITY.md               漏洞报告流程
 ├─ LICENSE                   MIT
@@ -71,14 +74,17 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 │  ├─ verify.ts              Turnstile 服务端校验 + 签发 Cookie
 │  ├─ download.ts            资产校验 + 重定向校验 + 流式回源
 │  ├─ release.ts             GitHub API + Cache API（5 分钟新鲜 / 24 小时陈旧兜底）
+│  ├─ metrics-do.ts          下载事件存储 + 聚合（SQLite Durable Object）
+│  ├─ admin.ts               管理登录 / 统计页 / CSV / JSON
 │  ├─ ui.ts                  服务端渲染页面（全部转义）
+│  ├─ ui-admin.ts            管理页与登录页
 │  ├─ assets.ts              内联 app.js / style.css
 │  ├─ env.d.ts               补充 secrets 类型
 │  └─ lib/
-│     ├─ auth.ts             HMAC 会话
+│     ├─ auth.ts             HMAC 会话 + 管理员令牌
 │     ├─ security.ts         路径 / URL / Range / 文件名校验
 │     └─ ratelimit.ts        KV 限流
-└─ test/                     136 个测试（含绕过用例）
+└─ test/                     151 个测试（含绕过用例）
 ```
 
 ## 本地开发
@@ -134,6 +140,9 @@ npm run types        # 修改 wrangler.jsonc 后重新生成 Env 类型
    # 生成会话密钥（32 字节 hex）
    [Convert]::ToHexString((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
    npx wrangler secret put SESSION_SECRET
+   # 管理页登录令牌（>= 16 字符，建议 32）
+   [Convert]::ToHexString((1..24 | ForEach-Object { Get-Random -Maximum 256 }))
+   npx wrangler secret put ADMIN_TOKEN
    ```
 
    可选（把 GitHub API 配额从 60/h 提到 5000/h）：
@@ -170,14 +179,39 @@ npm run types        # 修改 wrangler.jsonc 后重新生成 Env 类型
 | `RELEASE_CACHE_TTL` | `300` | Release 元数据缓存秒数 |
 | `VERIFY_LIMIT_PER_HOUR` | `10` | 每 IP 每小时验证次数 |
 | `DOWNLOAD_LIMIT_PER_HOUR` | `200` | 每 IP 每小时下载次数 |
+| `ADMIN_LIMIT_PER_HOUR` | `10` | 每 IP 每小时管理登录尝试次数 |
+| `METRICS_RETENTION_DAYS` | `30` | 下载事件保留天数（1–365） |
 
-Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`（均必需）、`GITHUB_TOKEN`（可选）、`SESSION_BIND_IP=1`（可选，把会话绑定到 IP + UA）。
+Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`、`ADMIN_TOKEN`（均必需）、`GITHUB_TOKEN`（可选）、`SESSION_BIND_IP=1`（可选，把会话绑定到 IP + UA）。
 
-修改 `REPOS` 等变量后重新 `npm run deploy` 即可；修改了绑定结构再跑一次 `npm run types`。
+修改 `REPOS` 等变量后重新 `npm run deploy` 即可；修改了绑定结构再跑一次 `npm run types`。首次部署会创建 `MetricsDO`（`migrations` 里的 `v1` 会由 Wrangler 自动应用）。
+
+## 管理页与统计
+
+`/admin` 是独立入口，**不在下载页放链接**，也不会被下载会话或 Turnstile 放行：
+
+| 路由 | 说明 |
+| --- | --- |
+| `GET /admin/login` | 输入 `ADMIN_TOKEN` 的表单 |
+| `POST /admin/login` | 校验令牌，下发 12 小时 `dl_admin` Cookie（`HttpOnly; Secure; SameSite=Strict; Path=/admin`） |
+| `GET /admin?range=24h\|7d\|30d` | 统计页：请求数、可缓存数、字节、TTL 命中率/回源占比、按资产、按 colo、TTFB p50/p95 |
+| `GET /admin/data.json` | 同一份数据的 JSON（需管理员 Cookie） |
+| `GET /admin/export.csv` | 按资产的 CSV 导出 |
+| `GET /admin/logout` | 清除管理员 Cookie |
+
+实现方式：
+
+- 每次通过验证的下载（200/206）写入一个 SQLite Durable Object（`MetricsDO`），只记 `colo / country / asn / repo / tag / asset / size / status / range / upstreamMs`，**不记 IP、Cookie、token**
+- `METRICS_RETENTION_DAYS` 到期自动清理
+- TTL 命中率与 `npm run analyze` 使用同一份 `shared/stats.mjs`，两边口径一致
+- `ADMIN_TOKEN` 未配置时 `/admin*` 直接 404；登录失败按 IP 限流；令牌比较使用 SHA-256 摘要 + 常量时间比较
+- 管理员 Cookie 使用独立的 `a1.` 前缀，下载会话的 `v1.` 令牌无法当作管理员令牌使用
+
+> 如果启用了“减少扫描流量”里的 WAF 放行规则，记得把 `/admin` 和 `/admin/*` 加进去，否则管理页会被边缘拦截。
 
 ## 测试覆盖
 
-`npm test` 共 136 个用例，包含：
+`npm test` 共 151 个用例，包含：
 
 - 未带 Cookie / 伪造签名 / 篡改 payload / 换密钥签名 / 过期会话 → 401，且断言 **0 次回源**
 - `..%2f`、`%252e%252e`、`%2f`、`%5c`、`%00`、超长段、多余段、尾斜杠 → 400/404，且 0 次回源
@@ -202,8 +236,9 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`（均必需）、`GITHUB_TOKEN`�
 
    ```
    not (
-     http.request.uri.path in {"/" "/healthz" "/robots.txt" "/logout" "/api/verify" "/api/releases" "/assets/app.js" "/assets/style.css"}
+     http.request.uri.path in {"/" "/healthz" "/robots.txt" "/logout" "/api/verify" "/api/releases" "/assets/app.js" "/assets/style.css" "/admin"}
      or starts_with(http.request.uri.path, "/dl/")
+     or starts_with(http.request.uri.path, "/admin/")
    )
    ```
 

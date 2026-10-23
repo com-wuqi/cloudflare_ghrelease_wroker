@@ -19,12 +19,28 @@
     "SESSION_TTL_SECONDS": "3600",
     "RELEASE_CACHE_TTL": "300",
     "VERIFY_LIMIT_PER_HOUR": "10",
-    "DOWNLOAD_LIMIT_PER_HOUR": "200"
+    "DOWNLOAD_LIMIT_PER_HOUR": "200",
+    "ADMIN_LIMIT_PER_HOUR": "10",
+    "METRICS_RETENTION_DAYS": "30"
   },
   "kv_namespaces": [
     {
       "binding": "RATE_LIMIT",
       "id": "00000000000000000000000000000000"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "METRICS",
+        "class_name": "MetricsDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MetricsDO"]
     }
   ],
   "observability": {

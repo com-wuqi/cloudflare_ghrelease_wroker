@@ -1,3 +1,6 @@
+export { quantile, simulateTtl } from '../../shared/stats.mjs';
+export type { TtlEvent, TtlSimulation } from '../../shared/stats.mjs';
+
 export interface DownloadEvent {
   t: number;
   colo: string;
@@ -13,17 +16,6 @@ export interface DownloadEvent {
   handlerMs: number;
 }
 
-export interface TtlSimulation {
-  ttlMs: number;
-  hits: number;
-  misses: number;
-  total: number;
-  hitRate: number;
-  originShare: number;
-  bytesServed: number;
-  bytesSaved: number;
-}
-
 export interface Summary {
   totalEvents: number;
   successful: number;
@@ -32,12 +24,13 @@ export interface Summary {
   handler: { p50: number; p95: number };
   assets: Array<{ asset: string; requests: number; bytes: number; colos: string[] }>;
   colos: Array<{ colo: string; requests: number }>;
-  ttls: TtlSimulation[];
+  ttls: import('../../shared/stats.mjs').TtlSimulation[];
   firstEventAt: number;
   lastEventAt: number;
 }
 
 export function parseTailLines(text: string): DownloadEvent[];
-export function simulateTtl(events: DownloadEvent[], ttlMs: number): TtlSimulation;
-export function quantile(values: number[], q: number): number;
-export function summarize(events: DownloadEvent[], ttlsMs: number[]): Summary;
+export function summarize(
+  events: DownloadEvent[],
+  ttlsMs: number[],
+): Summary;

@@ -1,3 +1,4 @@
+import { SELF } from 'cloudflare:test';
 import { afterAll, afterEach, beforeAll } from 'vitest';
 
 import { signSession } from '../src/lib/auth';
@@ -7,6 +8,7 @@ export const ORIGIN = 'https://dl.example.com';
 export const DEPLOY_HOST = 'dl.example.com';
 export const SESSION_SECRET = 'test-session-secret-0123456789abcdef0123456789';
 export const TEST_SITE_KEY = '1x00000000000000000000AA';
+export const TEST_ADMIN_TOKEN = 'test-admin-token-0123456789abcdef';
 export const REPO = 'example/app';
 export const OTHER_REPO = 'other-org/other-repo';
 
@@ -178,4 +180,48 @@ export function useUpstreamMock(): void {
   afterAll(() => {
     restoreUpstreamMock();
   });
+}
+
+/** Logs into /admin and returns the `dl_admin=...` cookie pair. */
+export async function adminCookie(token = TEST_ADMIN_TOKEN): Promise<string> {
+  const response = await SELF.fetch(`${ORIGIN}/admin/login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      origin: ORIGIN,
+    },
+    body: new URLSearchParams({ token }).toString(),
+  });
+
+  const setCookie = response.headers.get('set-cookie') ?? '';
+  return setCookie.split(';')[0] ?? '';
+}
+
+/** Performs one authorized download against a mocked GitHub. */
+export async function performDownload(
+  asset = 'app-1.0.0.zip',
+  options: { range?: string; cookie?: string } = {},
+): Promise<Response> {
+  registerRelease([{ name: asset }]);
+
+  const location =
+    'https://release-assets.githubusercontent.com/github-production-release-asset/1/2?token=abc';
+  route('github.com', githubAssetPath(asset), {
+    status: 302,
+    headers: { location },
+  });
+  routeWhere(
+    (url) => url.hostname === 'release-assets.githubusercontent.com',
+    {
+      status: 200,
+      headers: { 'content-type': 'application/zip' },
+      body: 'payload',
+    },
+  );
+
+  const headers = authHeaders(options.cookie ?? (await sessionCookie()));
+  if (options.range) headers.range = options.range;
+
+  return SELF.fetch(`${ORIGIN}/dl/${REPO}/${asset}`, { headers });
 }

@@ -16,11 +16,21 @@ describe('https upgrade', () => {
     );
   });
 
-  it('falls back to the request scheme when x-forwarded-proto is absent', async () => {
+  it('does not redirect when no edge headers are present (wrangler dev / tests)', async () => {
     const response = await SELF.fetch('http://dl.example.com/', { redirect: 'manual' });
 
+    expect(response.status).toBe(200);
+    expect(response.headers.get('location')).toBeNull();
+  });
+
+  it('upgrades when CF-Visitor reports http', async () => {
+    const response = await SELF.fetch('http://dl.example.com/healthz', {
+      redirect: 'manual',
+      headers: { 'cf-visitor': '{"scheme":"http"}' },
+    });
+
     expect(response.status).toBe(308);
-    expect(response.headers.get('location')).toBe('https://dl.example.com/');
+    expect(response.headers.get('location')).toBe('https://dl.example.com/healthz');
   });
 
   it('keeps the method on redirects so a POST is not turned into a GET', async () => {

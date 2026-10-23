@@ -215,4 +215,103 @@ a.button:hover { border-color: var(--accent); color: var(--accent); }
   margin-bottom: 14px;
   background: var(--bg);
 }
+
+body.admin { align-items: flex-start; }
+
+.stats {
+  width: 100%;
+  max-width: 1000px;
+  margin: 24px auto 60px;
+}
+
+.stats-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.stats-actions { display: flex; gap: 8px; }
+
+.tabs { display: flex; gap: 8px; margin: 6px 0 20px; }
+
+.tab {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+.tab.active { border-color: var(--accent); color: var(--accent); }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.metric {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.metric .value { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+.metric .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.section-title { font-size: 15px; margin: 26px 0 8px; }
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+table.data th,
+table.data td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+table.data thead th {
+  border-top: none;
+  background: var(--bg);
+  color: var(--muted);
+  font-weight: 500;
+}
+table.data .num { text-align: right; font-variant-numeric: tabular-nums; }
+table.data .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+table.data .empty { color: var(--muted); text-align: center; padding: 18px; }
+
+.login-form { text-align: left; margin-top: 16px; }
+.field {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.btn {
+  margin-top: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
 `;

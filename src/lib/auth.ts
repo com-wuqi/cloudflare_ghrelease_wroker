@@ -129,6 +129,77 @@ export function buildClearCookie(): string {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
 }
 
+const ADMIN_VERSION = 'a1';
+export const ADMIN_COOKIE = 'dl_admin';
+export const ADMIN_MAX_TTL_SECONDS = 12 * 3600;
+
+/**
+ * Admin tokens use a distinct `a1.` payload so a download session token can
+ * never be replayed as an admin token.
+ */
+export async function signAdminSession(
+  secret: string,
+  ttlSeconds: number = ADMIN_MAX_TTL_SECONDS,
+): Promise<string> {
+  if (!sessionSecretUsable(secret)) {
+    throw new Error('SESSION_SECRET missing or shorter than 32 characters');
+  }
+
+  const ttl = Math.min(Math.max(Math.trunc(ttlSeconds), 300), ADMIN_MAX_TTL_SECONDS);
+  const now = Math.floor(Date.now() / 1000);
+  const payload = [ADMIN_VERSION, String(now), String(now + ttl), randomId(16)].join('.');
+
+  const key = await importKey(secret);
+  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(payload)));
+  return `${payload}.${base64UrlEncode(signature)}`;
+}
+
+export async function verifyAdminSession(
+  token: string,
+  secret: string,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  if (!sessionSecretUsable(secret)) return false;
+  if (token.length === 0 || token.length > 512) return false;
+
+  const parts = token.split('.');
+  if (parts.length !== 5) return false;
+
+  const [version, iatRaw, expRaw, jti, signatureRaw] = parts;
+  if (!version || !iatRaw || !expRaw || !jti || !signatureRaw) return false;
+  if (version !== ADMIN_VERSION) return false;
+  if (!/^\d{1,12}$/.test(iatRaw) || !/^\d{1,12}$/.test(expRaw)) return false;
+
+  const iat = Number(iatRaw);
+  const exp = Number(expRaw);
+  if (exp <= nowSeconds) return false;
+  if (iat > nowSeconds + 60) return false;
+  if (exp - iat > ADMIN_MAX_TTL_SECONDS) return false;
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(jti)) return false;
+
+  const signature = base64UrlDecode(signatureRaw);
+  if (!signature) return false;
+
+  const payload = parts.slice(0, 4).join('.');
+  const key = await importKey(secret);
+  return crypto.subtle.verify('HMAC', key, signature, encoder.encode(payload));
+}
+
+export function buildAdminCookie(token: string, ttlSeconds: number): string {
+  return [
+    `${ADMIN_COOKIE}=${token}`,
+    'Path=/admin',
+    'HttpOnly',
+    'Secure',
+    'SameSite=Strict',
+    `Max-Age=${ttlSeconds}`,
+  ].join('; ');
+}
+
+export function buildClearAdminCookie(): string {
+  return `${ADMIN_COOKIE}=; Path=/admin; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+}
+
 export async function subjectFor(request: Request): Promise<string> {
   const ip = request.headers.get('cf-connecting-ip') ?? 'unknown';
   const userAgent = request.headers.get('user-agent') ?? '';
