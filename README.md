@@ -5,7 +5,7 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 - 白名单仓库：`example/app`（在 `wrangler.jsonc` 的 `REPOS` 中修改，逗号分隔，最多 20 个）
 - 只代理 `/releases/latest`，不支持任意 tag、不支持任意 URL
 - 运行时零依赖；发布配置只在本地，仓库里是占位符模板
-- 118 个测试覆盖路径穿越、伪造会话、恶意重定向等绕过场景
+- 136 个测试覆盖路径穿越、伪造会话、恶意重定向等绕过场景
 
 ---
 
@@ -60,7 +60,9 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 ├─ .dev.vars.example         本地开发模板
 ├─ scripts/
 │  ├─ bootstrap.mjs          首次运行自动复制模板
-│  └─ check-config.mjs       部署前检查占位符
+│  ├─ check-config.mjs       部署前检查占位符
+│  ├─ analyze-logs.mjs       缓存收益分析（读 wrangler tail NDJSON）
+│  └─ lib/analyze.mjs        纯函数：解析 / TTL 回放 / 汇总
 ├─ .github/workflows/ci.yml  CI：check + test
 ├─ SECURITY.md               漏洞报告流程
 ├─ LICENSE                   MIT
@@ -76,7 +78,7 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 │     ├─ auth.ts             HMAC 会话
 │     ├─ security.ts         路径 / URL / Range / 文件名校验
 │     └─ ratelimit.ts        KV 限流
-└─ test/                     118 个测试（含绕过用例）
+└─ test/                     136 个测试（含绕过用例）
 ```
 
 ## 本地开发
@@ -175,7 +177,7 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`（均必需）、`GITHUB_TOKEN`�
 
 ## 测试覆盖
 
-`npm test` 共 118 个用例，包含：
+`npm test` 共 136 个用例，包含：
 
 - 未带 Cookie / 伪造签名 / 篡改 payload / 换密钥签名 / 过期会话 → 401，且断言 **0 次回源**
 - `..%2f`、`%252e%252e`、`%2f`、`%5c`、`%00`、超长段、多余段、尾斜杠 → 400/404，且 0 次回源
@@ -186,6 +188,8 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`（均必需）、`GITHUB_TOKEN`�
 - Turnstile 成功 / 失败 / hostname 不匹配 / 跨站 Origin / 非法 token
 - `next=//evil`、`next=https://evil`、`javascript:` 等开放重定向 → 归一为 `/`
 - 会话签发 → 真实下载链路贯通
+- HTTP → HTTPS 308 升级、HSTS、本地开发豁免
+- 日志解析与 TTL 回放（含 Range / 非 200 / 跨 colo / 跨资产隔离）
 
 ## 减少扫描流量
 
@@ -214,6 +218,45 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`（均必需）、`GITHUB_TOKEN`�
 3. 可选：**Security → Bots** 打开 Bot Fight Mode。
 
 `wrangler.jsonc` 里 `observability.head_sampling_rate` 已设成 `0.1`，日志只保留 10% 采样，避免被扫描流量刷屏。
+
+## 测量缓存收益（可选）
+
+Worker 默认不缓存下载内容，所以 Dashboard 的缓存命中率是 0%——这是“动态鉴权代理”的正常形态。**要不要加缓存，先用日志算一遍**，不要凭感觉。
+
+每个通过验证的下载会打一条结构化日志（不含 IP / Cookie / token）：
+
+```json
+{"evt":"dl","colo":"SJC","country":"CN","asn":4134,"repo":"example/app","tag":"v1.0.0","asset":"app.zip","size":65001387,"status":200,"range":false,"redirects":1,"upstreamMs":412,"handlerMs":780}
+```
+
+采集与分析：
+
+```powershell
+# 1) 落文件（用 cmd 重定向，避免 PowerShell 写出 UTF-16）
+cmd /c "npx wrangler tail --format json > tail.ndjson"
+
+# 2) 正常使用站点，累计若干次下载后 Ctrl+C
+
+# 3) 回放一个 TTL 缓存，看本可以命中多少
+npm run analyze -- tail.ndjson --ttl 3600,21600,86400
+```
+
+输出示例：
+
+```
+下载事件: 128 条（成功且非 Range: 121 条）
+Colo 分布: SJC=90  HKG=30  NRT=8
+回源 TTFB: p50=0.42s  p95=1.10s
+
+按 TTL 模拟（同一 colo + 同一资产的重复请求视为可命中）:
+  TTL      命中    未命中   命中率    回源占比   可省字节
+  1h       18      103     14.9%     85.1%     1.1 GB
+  6h       41      80      33.9%     66.1%     2.5 GB
+
+[提示] 成功下载只有 121 条（少于 50），结论仅供参考；建议继续采集。
+```
+
+判据：24h 命中率低于 30%，或回源 TTFB p50 低于 300ms，说明加缓存的收益抵不过复杂度和 Cloudflare 条款风险，保持现状即可。`*.ndjson` 已在 `.gitignore` 中。
 
 ## 限制与风险
 

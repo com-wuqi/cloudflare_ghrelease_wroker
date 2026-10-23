@@ -14,6 +14,7 @@
     "types": "wrangler types --strict-vars false",
     "test": "vitest run",
     "test:watch": "vitest",
+    "analyze": "node scripts/analyze-logs.mjs",
     "check": "tsc --noEmit",
     "verify": "npm run check && npm run test"
   },

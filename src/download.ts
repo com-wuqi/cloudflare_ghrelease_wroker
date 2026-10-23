@@ -84,6 +84,7 @@ export async function handleDownload(
   fullName: string,
   assetName: string,
 ): Promise<Response> {
+  const startedAt = Date.now();
   const method = request.method.toUpperCase();
   if (method !== 'GET' && method !== 'HEAD') {
     return errorResponse(405, 'method_not_allowed', { allow: 'GET, HEAD' });
@@ -114,6 +115,7 @@ export async function handleDownload(
 
   const upstreamHeaders = buildUpstreamHeaders(request);
   let current = target;
+  const fetchStartedAt = Date.now();
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     let upstream: Response;
@@ -151,8 +153,50 @@ export async function handleDownload(
       return errorResponse(502, 'unexpected_content_type');
     }
 
+    logDownload(request, {
+      repo: release.info.fullName,
+      tag: release.info.tag,
+      asset: asset.name,
+      size: asset.size,
+      status: upstream.status,
+      range: upstreamHeaders.has('range'),
+      redirects: hop,
+      upstreamMs: Date.now() - fetchStartedAt,
+      handlerMs: Date.now() - startedAt,
+    });
+
     return toClientResponse(upstream, asset, method);
   }
 
   return errorResponse(502, 'too_many_redirects');
+}
+
+interface DownloadLogInput {
+  repo: string;
+  tag: string;
+  asset: string;
+  size: number;
+  status: number;
+  range: boolean;
+  redirects: number;
+  upstreamMs: number;
+  handlerMs: number;
+}
+
+/**
+ * One structured line per authorized download. Consumed by
+ * scripts/analyze-logs.mjs to simulate cache hit rates. Never logs IPs,
+ * cookies or tokens; `colo` / `country` / `asn` come from request.cf.
+ */
+function logDownload(request: Request, input: DownloadLogInput): void {
+  const cf = request.cf as IncomingRequestCfProperties | undefined;
+  console.log(
+    JSON.stringify({
+      evt: 'dl',
+      colo: typeof cf?.colo === 'string' ? cf.colo : 'unknown',
+      country: typeof cf?.country === 'string' ? cf.country : 'unknown',
+      asn: typeof cf?.asn === 'number' ? cf.asn : null,
+      ...input,
+    }),
+  );
 }
