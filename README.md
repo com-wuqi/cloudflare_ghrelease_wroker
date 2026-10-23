@@ -42,6 +42,7 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 | 开放重定向 | `next` 只接受站内绝对路径，解析后二次校验 origin |
 | 跨站提交验证 | 校验 `Origin`；siteverify 返回的 `hostname` 必须与本站一致 |
 | 方法滥用 | 仅 `GET` / `HEAD` / `POST`（`POST` 仅用于 `/api/verify`） |
+| HTTP 降级 | 非本地 HTTP 请求一律 308 升级到 HTTPS（保留方法与 body），HTTPS 响应带 HSTS |
 | 缓存泄露 | 页面与 API `no-store`；下载响应 `private, no-store` |
 | 滥用刷量 | 每 IP 验证 10 次/小时、下载 200 次/小时（KV，best-effort） |
 
@@ -235,6 +236,7 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`（均必需）、`GITHUB_TOKEN`�
 | `reason=network` / `upstream_error` | GitHub 网络或服务端异常，查看 `npx wrangler tail` |
 | `{"error":"asset_not_found"}` | 资产名不在最新 Release 中（或最新 Release 已更新） |
 | 部署报 KV namespace not found | 未替换 `wrangler.jsonc` 里的 KV 占位 id |
+| 用 `http://` 打开会反复弹人机验证 | 会话 Cookie 带 `Secure`，HTTP 下浏览器不会保存。Worker 会把非本地 HTTP 请求 308 到 HTTPS；再建议在 Cloudflare 开 Always Use HTTPS 或加一条 Redirect Rule |
 | 大量 `/.env`、`/wp-admin` 之类请求 | 全网扫描，未知路径直接 404、不会回源；用 WAF 规则挡在边缘，见“减少扫描流量” |
 
 排查线上问题时用 `npx wrangler tail`，日志会打印 GitHub 状态码、是否带 token、`x-ratelimit-remaining/reset`。

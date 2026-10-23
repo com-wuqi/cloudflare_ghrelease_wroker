@@ -66,10 +66,44 @@ async function buildViews(env: Env, repos: readonly string[]): Promise<RepoView[
   return views;
 }
 
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+function isLocalHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    LOCAL_HOSTS.has(host) ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.test')
+  );
+}
+
+/**
+ * The session cookie is `Secure`, so plain HTTP can never hold a session and
+ * would loop between "verify" and "no cookie". Upgrade before any other work.
+ * Cloudflare sends `x-forwarded-proto`; fall back to the request URL scheme.
+ */
+function shouldUpgradeToHttps(request: Request, url: URL): boolean {
+  if (isLocalHost(url.hostname)) return false;
+
+  const forwarded = request.headers.get('x-forwarded-proto');
+  if (forwarded) return forwarded.split(',')[0]?.trim().toLowerCase() === 'http';
+  return url.protocol === 'http:';
+}
+
 async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
   const pathname = url.pathname;
+
+  if (shouldUpgradeToHttps(request, url)) {
+    const secure = new URL(url.toString());
+    secure.protocol = 'https:';
+    return new Response(null, {
+      status: 308,
+      headers: { location: secure.toString(), 'cache-control': 'no-store' },
+    });
+  }
 
   if (method === 'OPTIONS') {
     return jsonResponse({ error: 'method_not_allowed' }, 405, { allow: 'GET, HEAD, POST' });
@@ -195,6 +229,12 @@ function finalize(request: Request, response: Response): Response {
   headers.set('x-robots-tag', 'noindex, nofollow');
   headers.set('cross-origin-opener-policy', 'same-origin');
   headers.set('permissions-policy', 'camera=(), microphone=(), geolocation=()');
+
+  const forwardedProto = request.headers.get('x-forwarded-proto');
+  const isHttps = forwardedProto
+    ? forwardedProto.split(',')[0]?.trim().toLowerCase() === 'https'
+    : new URL(request.url).protocol === 'https:';
+  if (isHttps) headers.set('strict-transport-security', 'max-age=31536000');
 
   const body = request.method === 'HEAD' ? null : response.body;
   return new Response(body, {
