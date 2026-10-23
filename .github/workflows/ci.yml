@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v8
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # wrangler.jsonc is intentionally not committed; tests read
+      # wrangler.example.jsonc and inject their own bindings.
+      - run: npm run check
+
+      - run: npm test

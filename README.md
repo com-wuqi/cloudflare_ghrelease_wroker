@@ -1,0 +1,253 @@
+# akeymux-release-gate
+
+Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 最新 Release**。
+
+- 白名单仓库：`example/app`（在 `wrangler.jsonc` 的 `REPOS` 中修改，逗号分隔，最多 20 个）
+- 只代理 `/releases/latest`，不支持任意 tag、不支持任意 URL
+- 运行时零依赖；发布配置只在本地，仓库里是占位符模板
+- 118 个测试覆盖路径穿越、伪造会话、恶意重定向等绕过场景
+
+---
+
+## 请求流程
+
+```
+浏览器
+ ├─ GET /                        → 验证页（Turnstile widget）
+ ├─ POST /api/verify {token,next} → 服务端 siteverify → 下发 HMAC 签名 Cookie（默认 60 分钟）
+ ├─ GET /                        → 已验证：列出白名单仓库的最新 Release 资产
+ ├─ GET /api/releases            → 已验证：JSON 元数据
+ └─ GET /dl/{owner}/{repo}/{asset}
+        ├─ 1. 校验签名 Cookie（HMAC-SHA256 + 过期时间 + 可选 IP 绑定）
+        ├─ 2. owner/repo 必须在 REPOS 白名单
+        ├─ 3. asset 必须精确命中 latest release 的 assets[].name
+        ├─ 4. 回源 GitHub（manual redirect，逐跳校验 GitHub 域名）
+        └─ 5. 流式回传（透传 Range / 206，可断点续传）
+```
+
+未验证时用浏览器打开下载链接会先显示验证页，验证通过后自动跳回原链接；`curl` 等非 HTML 客户端直接得到 `401`。
+
+## 安全模型
+
+| 风险 | 处理 |
+| --- | --- |
+| 绕过验证直接下载 | 门禁在 `/dl/*` 路由内部第一行执行，未通过不会发起任何回源请求 |
+| SSRF / 任意 URL | 上游 host 硬编码，没有任何 `?url=` 参数 |
+| 路径穿越 `..`、`%2e%2e`、`%252e`、`%2f`、`%00`、反斜杠 | 不拼接原始 path；按 `/` 切段、只解码一次、逐段白名单正则校验后用 `encodeURIComponent` 重建 |
+| 下载非 release 文件 | 资产名必须与 GitHub API 返回的资产列表精确相等 |
+| 重定向劫持 | `redirect: "manual"`，逐跳校验 `https` + GitHub 域名（严格 label 边界），最多 3 跳 |
+| 伪造 / 重放 Cookie | HMAC 密钥缺失时 fail-closed（500）；签名含 `exp`/`jti`；Turnstile token 一次性 |
+| 跨站盗链 | `SameSite=Lax` + 无 CORS 头 + `Cross-Origin-Resource-Policy: same-origin` |
+| 备用入口 | `workers_dev=false`、`preview_urls=false`，只有自定义域名可达 |
+| 开放重定向 | `next` 只接受站内绝对路径，解析后二次校验 origin |
+| 跨站提交验证 | 校验 `Origin`；siteverify 返回的 `hostname` 必须与本站一致 |
+| 方法滥用 | 仅 `GET` / `HEAD` / `POST`（`POST` 仅用于 `/api/verify`） |
+| 缓存泄露 | 页面与 API `no-store`；下载响应 `private, no-store` |
+| 滥用刷量 | 每 IP 验证 10 次/小时、下载 200 次/小时（KV，best-effort） |
+
+其他默认响应头：`X-Content-Type-Options`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、`X-Robots-Tag: noindex`、CSP。
+
+## 目录结构
+
+```
+.
+├─ wrangler.example.jsonc    部署配置模板（占位符，入库）
+├─ wrangler.jsonc            真实部署配置（gitignore，本地填写）
+├─ worker-configuration.d.ts 由 `npm run types` 生成
+├─ vitest.config.ts          测试环境（Cloudflare Workers runtime，使用 example 配置）
+├─ .dev.vars                 本地开发密钥（gitignore）
+├─ .dev.vars.example         本地开发模板
+├─ scripts/
+│  ├─ bootstrap.mjs          首次运行自动复制模板
+│  └─ check-config.mjs       部署前检查占位符
+├─ .github/workflows/ci.yml  CI：check + test
+├─ SECURITY.md               漏洞报告流程
+├─ LICENSE                   MIT
+├─ src/
+│  ├─ index.ts               路由 + 全局安全头 + fail-closed
+│  ├─ verify.ts              Turnstile 服务端校验 + 签发 Cookie
+│  ├─ download.ts            资产校验 + 重定向校验 + 流式回源
+│  ├─ release.ts             GitHub API + Cache API（5 分钟新鲜 / 24 小时陈旧兜底）
+│  ├─ ui.ts                  服务端渲染页面（全部转义）
+│  ├─ assets.ts              内联 app.js / style.css
+│  ├─ env.d.ts               补充 secrets 类型
+│  └─ lib/
+│     ├─ auth.ts             HMAC 会话
+│     ├─ security.ts         路径 / URL / Range / 文件名校验
+│     └─ ratelimit.ts        KV 限流
+└─ test/                     118 个测试（含绕过用例）
+```
+
+## 本地开发
+
+```powershell
+npm install
+npm run dev          # 首次会自动从 example 生成 wrangler.jsonc / .dev.vars，然后 http://127.0.0.1:8787
+```
+
+`wrangler.jsonc` 与 `.dev.vars` 都不入库：前者放你的域名 / KV id / Site Key，后者放本地密钥。
+`.dev.vars.example` 默认使用 Cloudflare 官方 **Turnstile 测试密钥**（永远通过），可以直接点开验证页走完整流程。
+
+```powershell
+npm run bootstrap    # 手动生成缺失的 wrangler.jsonc / .dev.vars
+npm run check        # tsc --noEmit
+npm test             # vitest（Workers runtime）
+npm run types        # 修改 wrangler.jsonc 后重新生成 Env 类型
+```
+
+
+## 部署步骤
+
+0. **生成本地配置**
+
+   ```powershell
+   npm run bootstrap     # 从 example 复制出 wrangler.jsonc
+   ```
+
+   `wrangler.jsonc` 已被 gitignore，只存在于你的机器上；仓库里提交的是 `wrangler.example.jsonc`。
+
+1. **创建 KV namespace**
+
+   ```powershell
+   npx wrangler kv namespace create RATE_LIMIT
+   ```
+
+   把输出的 `id` 填进 `wrangler.jsonc` 的 `kv_namespaces[0].id`（占位符 `0000...` 不替换会导致部署失败）。
+
+2. **创建 Turnstile widget**
+
+   Cloudflare Dashboard → Turnstile → Add widget：
+   - Hostname：你的自定义域名（例如 `dl.example.com`）
+   - Widget mode：Managed
+   - 记下 **Site Key**（公开）和 **Secret Key**
+
+   把 Site Key 填进 `wrangler.jsonc` 的 `vars.TURNSTILE_SITE_KEY`（未填时首页会显示“服务未就绪”）。
+   同时把 `routes[0].pattern` 改成你的域名、`REPOS` 改成要代理的仓库。
+
+3. **写入 secrets**
+
+   ```powershell
+   npx wrangler secret put TURNSTILE_SECRET
+   # 生成会话密钥（32 字节 hex）
+   [Convert]::ToHexString((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+   npx wrangler secret put SESSION_SECRET
+   ```
+
+   可选（把 GitHub API 配额从 60/h 提到 5000/h）：
+
+   ```powershell
+   npx wrangler secret put GITHUB_TOKEN
+   ```
+
+4. **部署**
+
+   ```powershell
+   npx wrangler login     # 首次需要浏览器授权
+   npm run deploy
+   ```
+
+   `routes` 已配置为 `dl.example.com`（`custom_domain: true`）。域名的 zone 必须在同一个 Cloudflare 账号下，Wrangler 会自动创建 DNS 记录和证书。
+
+5. **验收**
+
+   ```powershell
+   curl.exe -i https://dl.example.com/healthz
+   curl.exe -i https://dl.example.com/dl/example/app/xxx.zip   # 应返回 401
+   ```
+
+   浏览器打开首页 → 完成人机验证 → 看到 Release 列表 → 下载。
+
+## 配置项（wrangler.jsonc vars）
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `REPOS` | `example/app` | 逗号分隔的白名单，最多 20 个 |
+| `TURNSTILE_SITE_KEY` | 空 | Turnstile Site Key |
+| `SESSION_TTL_SECONDS` | `3600` | 会话有效期，限制在 300–7200 秒 |
+| `RELEASE_CACHE_TTL` | `300` | Release 元数据缓存秒数 |
+| `VERIFY_LIMIT_PER_HOUR` | `10` | 每 IP 每小时验证次数 |
+| `DOWNLOAD_LIMIT_PER_HOUR` | `200` | 每 IP 每小时下载次数 |
+
+Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`（均必需）、`GITHUB_TOKEN`（可选）、`SESSION_BIND_IP=1`（可选，把会话绑定到 IP + UA）。
+
+修改 `REPOS` 等变量后重新 `npm run deploy` 即可；修改了绑定结构再跑一次 `npm run types`。
+
+## 测试覆盖
+
+`npm test` 共 118 个用例，包含：
+
+- 未带 Cookie / 伪造签名 / 篡改 payload / 换密钥签名 / 过期会话 → 401，且断言 **0 次回源**
+- `..%2f`、`%252e%252e`、`%2f`、`%5c`、`%00`、超长段、多余段、尾斜杠 → 400/404，且 0 次回源
+- 非白名单仓库、非 release 资产 → 404
+- 上游 302 到 `evil.example`、`evil-githubusercontent.com` → 502，且不会请求恶意域
+- 上游 302 到 `release-assets.githubusercontent.com` → 200，Range → 206，HEAD 无 body
+- 上游返回 `text/html` 伪装资产 → 502
+- Turnstile 成功 / 失败 / hostname 不匹配 / 跨站 Origin / 非法 token
+- `next=//evil`、`next=https://evil`、`javascript:` 等开放重定向 → 归一为 `/`
+- 会话签发 → 真实下载链路贯通
+
+## 减少扫描流量
+
+公开域名一定会被全网扫描（证书透明日志会立刻暴露新 hostname）。这些请求本身不会碰到 GitHub：
+未知路径直接 404，`/dl/*` 没有有效会话直接 401。但它们会消耗 Worker 调用次数并刷满日志。
+
+推荐在 Cloudflare Dashboard 加两层边缘规则（免费套餐够用）：
+
+1. **Security → WAF → Custom rules**（免费 5 条）：只放行本站路由，其余直接 Block。
+
+   ```
+   not (
+     http.request.uri.path in {"/" "/healthz" "/robots.txt" "/logout" "/api/verify" "/api/releases" "/assets/app.js" "/assets/style.css"}
+     or starts_with(http.request.uri.path, "/dl/")
+   )
+   ```
+
+2. **Security → WAF → Rate limiting rules**（免费 1 条）：限制验证接口。
+
+   ```
+   http.request.uri.path eq "/api/verify"
+   ```
+
+   10 次 / 1 分钟 / IP，Action 选 Block 或 Managed Challenge。
+
+3. 可选：**Security → Bots** 打开 Bot Fight Mode。
+
+`wrangler.jsonc` 里 `observability.head_sampling_rate` 已设成 `0.1`，日志只保留 10% 采样，避免被扫描流量刷屏。
+
+## 限制与风险
+
+- **Cloudflare 服务条款 2.8**：用 CDN 代理“不成比例的大量非 HTML 内容（大文件）”存在被限制的风险。个人小流量通常无碍，但请自行评估；白名单 + 限流可降低风险。
+- **免费套餐**：10 万请求/日。大文件按请求计，不按字节计，但流量会消耗你的账户额度。
+- **GitHub API 配额**：未认证 60 次/小时/IP（Cloudflare 出口 IP 共享）。已用 Cache API 缓存 5 分钟，并在 API 失败时回退到 24 小时内的旧数据；长期使用建议配置 `GITHUB_TOKEN`。
+- **大文件**：Worker 流式转发不缓存到磁盘，支持 `Range` 断点续传；但极慢的客户端可能被链路中断，重试即可续传。
+- **“加速”原理**：由 Cloudflare 边缘节点回源 GitHub 再回传给你，规避本地到 GitHub 的劣质线路；不是传统 CDN 缓存。
+- **会话共享**：验证后 60 分钟内 Cookie 可被主动分享，因此配合了每 IP 下载限流；如需更严可设 `SESSION_BIND_IP=1`。
+- `compatibility_date` 固定为 `2026-08-22`，与测试运行时一致；升级 Wrangler 后可自行上调。
+
+## 常见问题
+
+| 现象 | 原因 |
+| --- | --- |
+| 首页“服务未就绪” | `TURNSTILE_SITE_KEY` 为空、`TURNSTILE_SECRET` / `SESSION_SECRET` 未设置 |
+| 验证一直失败 | 站点密钥与 Secret 不匹配，或 Turnstile widget 的 hostname 与访问域名不一致 |
+| 首页 `reason=rate_limited` / `{"error":"release_unavailable","reason":"rate_limited"}` | GitHub API 403/429 限流（Cloudflare 共享出口 IP 很容易触发）。配置 `GITHUB_TOKEN` 即可 |
+| `reason=not_found` | 仓库不存在、没有已发布 Release，或 token 无权访问 |
+| `reason=network` / `upstream_error` | GitHub 网络或服务端异常，查看 `npx wrangler tail` |
+| `{"error":"asset_not_found"}` | 资产名不在最新 Release 中（或最新 Release 已更新） |
+| 部署报 KV namespace not found | 未替换 `wrangler.jsonc` 里的 KV 占位 id |
+| 大量 `/.env`、`/wp-admin` 之类请求 | 全网扫描，未知路径直接 404、不会回源；用 WAF 规则挡在边缘，见“减少扫描流量” |
+
+排查线上问题时用 `npx wrangler tail`，日志会打印 GitHub 状态码、是否带 token、`x-ratelimit-remaining/reset`。
+
+## 免责声明
+
+- 本项目只用于加速**你自己拥有、或已获得公开分发授权**的 Release 产物。
+- 请自行确认符合 [Cloudflare 服务条款](https://www.cloudflare.com/terms/)（尤其是关于大体积非 HTML 内容的部分）与 [GitHub 服务条款](https://docs.github.com/site-policy/github-terms/github-terms-of-service)。
+- 不要使用 Turnstile 官方测试密钥部署生产环境；不要提交 `wrangler.jsonc`、`.dev.vars` 或任何真实密钥。
+- 软件按 MIT 协议“按原样”提供，不附带任何可用性、安全性或合规性担保。
+
+安全问题请按 [SECURITY.md](./SECURITY.md) 私下报告，不要开公开 issue。
+
+## License
+
+[MIT](./LICENSE) © 2026 com-wuqi

@@ -1,0 +1,34 @@
+{
+  // Copy to wrangler.jsonc (npm run bootstrap) and replace every placeholder.
+  // wrangler.jsonc is gitignored so real account identifiers stay local.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "turnstile-release-gate",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-22",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "dl.example.com",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "REPOS": "owner/repo",
+    "TURNSTILE_SITE_KEY": "YOUR_TURNSTILE_SITE_KEY",
+    "SESSION_TTL_SECONDS": "3600",
+    "RELEASE_CACHE_TTL": "300",
+    "VERIFY_LIMIT_PER_HOUR": "10",
+    "DOWNLOAD_LIMIT_PER_HOUR": "200"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  }
+}

@@ -1,0 +1,22 @@
+# Copy to `.dev.vars` for local development with `wrangler dev`.
+#
+# Cloudflare Turnstile public test keys:
+#   site key : 1x00000000000000000000AA   (always passes)
+#   secret   : 1x0000000000000000000000000000000AA
+# Always-block pair: 2x00000000000000000000AB / 2x0000000000000000000000000000000AA
+TURNSTILE_SITE_KEY=1x00000000000000000000AA
+TURNSTILE_SECRET=1x0000000000000000000000000000000AA
+
+# >= 32 characters. Generate with: openssl rand -hex 32
+SESSION_SECRET=replace-with-a-random-32-byte-secret
+
+SESSION_TTL_SECONDS=3600
+RELEASE_CACHE_TTL=300
+VERIFY_LIMIT_PER_HOUR=10
+DOWNLOAD_LIMIT_PER_HOUR=200
+
+# Optional: raises GitHub API quota from 60/h to 5000/h.
+# GITHUB_TOKEN=ghp_xxx
+
+# Optional: bind the session cookie to the client IP (default off).
+# SESSION_BIND_IP=0

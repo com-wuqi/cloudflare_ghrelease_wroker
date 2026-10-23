@@ -1,0 +1,31 @@
+{
+  "name": "akeymux-release-gate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker: Turnstile-gated accelerator for GitHub latest-release downloads",
+  "scripts": {
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "predev": "node scripts/bootstrap.mjs",
+    "dev": "wrangler dev",
+    "predeploy": "node scripts/check-config.mjs",
+    "deploy": "wrangler deploy",
+    "pretypes": "node scripts/bootstrap.mjs",
+    "types": "wrangler types --strict-vars false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "tsc --noEmit",
+    "verify": "npm run check && npm run test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.7",
+    "@vitest/runner": "^4.1.12",
+    "@vitest/snapshot": "^4.1.12",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.152.0"
+  }
+}
