@@ -109,6 +109,14 @@ describe('turnstile verification', () => {
     expect(upstreamCalls()).toHaveLength(0);
   });
 
+  it('accepts a null origin produced by an http-to-https upgrade', async () => {
+    mockSiteverify({ success: true, hostname: 'example.com' });
+
+    const response = await verifyRequest({ token: GOOD_TOKEN }, { origin: 'null' });
+
+    expect(response.status).toBe(200);
+  });
+
   it('rejects short or missing tokens without calling siteverify', async () => {
     const short = await verifyRequest({ token: 'abc' });
     expect(short.status).toBe(400);

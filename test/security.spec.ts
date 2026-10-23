@@ -4,6 +4,7 @@ import { signSession, verifySession } from '../src/lib/auth';
 import {
   contentDisposition,
   isAllowedAssetUrl,
+  isSameHostOrigin,
   isSafeName,
   matchRepo,
   parseRepoList,
@@ -162,6 +163,23 @@ describe('contentDisposition', () => {
     expect(value).not.toContain('\r');
     expect(value).not.toContain('\n');
     expect(value).toContain('filename="a_b_c.zip"');
+  });
+});
+
+describe('isSameHostOrigin', () => {
+  it('allows missing or null origins', () => {
+    expect(isSameHostOrigin(null, 'https://dl.example.com/admin')).toBe(true);
+    expect(isSameHostOrigin('null', 'https://dl.example.com/admin')).toBe(true);
+  });
+
+  it('allows scheme differences on the same host', () => {
+    expect(isSameHostOrigin('http://dl.example.com', 'https://dl.example.com/admin')).toBe(true);
+    expect(isSameHostOrigin('https://dl.example.com', 'https://dl.example.com/admin')).toBe(true);
+  });
+
+  it('rejects another host or garbage', () => {
+    expect(isSameHostOrigin('https://evil.example', 'https://dl.example.com/admin')).toBe(false);
+    expect(isSameHostOrigin('not a url', 'https://dl.example.com/admin')).toBe(false);
   });
 });
 

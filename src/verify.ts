@@ -15,7 +15,7 @@ import {
   subjectFor,
 } from './lib/auth';
 import { clientKey, consumeQuota } from './lib/ratelimit';
-import { safeNextPath } from './lib/security';
+import { isSameHostOrigin, safeNextPath } from './lib/security';
 
 const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const MAX_BODY_BYTES = 4096;
@@ -63,7 +63,7 @@ export async function handleVerify(request: Request, env: Env): Promise<Response
   }
 
   const origin = request.headers.get('origin');
-  if (origin && origin !== new URL(request.url).origin) {
+  if (!isSameHostOrigin(origin, request.url)) {
     return json({ error: 'cross_origin_denied' }, 403);
   }
 

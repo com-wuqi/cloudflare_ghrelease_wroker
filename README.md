@@ -84,7 +84,7 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 │     ├─ auth.ts             HMAC 会话 + 管理员令牌
 │     ├─ security.ts         路径 / URL / Range / 文件名校验
 │     └─ ratelimit.ts        KV 限流
-└─ test/                     151 个测试（含绕过用例）
+└─ test/                     157 个测试（含绕过用例）
 ```
 
 ## 本地开发
@@ -211,7 +211,7 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`、`ADMIN_TOKEN`（均必需）�
 
 ## 测试覆盖
 
-`npm test` 共 151 个用例，包含：
+`npm test` 共 157 个用例，包含：
 
 - 未带 Cookie / 伪造签名 / 篡改 payload / 换密钥签名 / 过期会话 → 401，且断言 **0 次回源**
 - `..%2f`、`%252e%252e`、`%2f`、`%5c`、`%00`、超长段、多余段、尾斜杠 → 400/404，且 0 次回源
@@ -314,6 +314,7 @@ Colo 分布: SJC=90  HKG=30  NRT=8
 | `reason=network` / `upstream_error` | GitHub 网络或服务端异常，查看 `npx wrangler tail` |
 | `{"error":"asset_not_found"}` | 资产名不在最新 Release 中（或最新 Release 已更新） |
 | 部署报 KV namespace not found | 未替换 `wrangler.jsonc` 里的 KV 占位 id |
+| 管理登录报“来源不被允许” | 已兼容 `Origin: null`（HTTP→HTTPS 表单升级）和 http/https 同 host 差异；仍出现时看 `wrangler tail` 里的 `admin login origin mismatch` |
 | 用 `http://` 打开会反复弹人机验证 | 会话 Cookie 带 `Secure`，HTTP 下浏览器不会保存。Worker 会把非本地 HTTP 请求 308 到 HTTPS；再建议在 Cloudflare 开 Always Use HTTPS 或加一条 Redirect Rule |
 | 大量 `/.env`、`/wp-admin` 之类请求 | 全网扫描，未知路径直接 404、不会回源；用 WAF 规则挡在边缘，见“减少扫描流量” |
 

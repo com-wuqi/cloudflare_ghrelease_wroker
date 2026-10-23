@@ -170,6 +170,21 @@ export function safeNextPath(value: string | null | undefined, origin: string): 
   return `${target.pathname}${target.search}`;
 }
 
+export function isSameHostOrigin(origin: string | null, requestUrl: string): boolean {
+  // Browsers send `Origin: null` for cross-origin redirects (e.g. a form POST
+  // upgraded from http to https) and for some privacy modes. The hostname is
+  // still checked whenever a real origin is provided.
+  if (!origin || origin === 'null') return true;
+
+  try {
+    const parsed = new URL(origin);
+    const expected = new URL(requestUrl);
+    return parsed.hostname.toLowerCase() === expected.hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 /** Single-range `bytes=` header only, everything else is dropped. */
 export function sanitizeRange(value: string | null): string | null {
   if (!value || value.length > 100) return null;

@@ -11,6 +11,7 @@ import {
   verifyAdminSession,
 } from './lib/auth';
 import { clientKey, consumeQuota } from './lib/ratelimit';
+import { isSameHostOrigin } from './lib/security';
 import type { MetricsStub, MetricsSummary } from './metrics-do';
 import {
   RANGES,
@@ -91,7 +92,8 @@ async function hasAdminSession(request: Request, env: Env): Promise<boolean> {
 
 async function handleLogin(request: Request, env: Env): Promise<Response> {
   const origin = request.headers.get('origin');
-  if (origin && origin !== new URL(request.url).origin) {
+  if (!isSameHostOrigin(origin, request.url)) {
+    console.error('admin login origin mismatch', { origin, url: request.url });
     return renderAdminLogin('来源不被允许。', 403);
   }
 

@@ -70,6 +70,29 @@ describe('admin gate', () => {
     expect(response.headers.get('set-cookie')).toBeNull();
   });
 
+  it('accepts a null Origin produced by an http-to-https form upgrade', async () => {
+    const response = await SELF.fetch(LOGIN_URL, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: formHeaders('null'),
+      body: loginBody(TEST_ADMIN_TOKEN),
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('set-cookie')).toContain('dl_admin=');
+  });
+
+  it('accepts an http Origin when the hostname matches', async () => {
+    const response = await SELF.fetch(LOGIN_URL, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: formHeaders('http://dl.example.com'),
+      body: loginBody(TEST_ADMIN_TOKEN),
+    });
+
+    expect(response.status).toBe(302);
+  });
+
   it('cannot be reached with a download session token', async () => {
     const token = (await sessionCookie()).slice('dl_session='.length);
     const response = await SELF.fetch(`${ORIGIN}/admin`, {
