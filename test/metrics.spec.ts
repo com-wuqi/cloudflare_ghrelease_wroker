@@ -180,6 +180,7 @@ describe('download metrics', () => {
 
     const failing = {
       METRICS: {
+        idFromName: () => 'global',
         get() {
           throw new Error('metrics unavailable');
         },
