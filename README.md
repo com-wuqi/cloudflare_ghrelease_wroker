@@ -93,6 +93,8 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 
 ## 本地开发
 
+需要 Node.js **>= 22**（`wrangler` 与 `miniflare` 的要求）。
+
 ```powershell
 npm install
 npm run dev          # 首次会自动从 example 生成 wrangler.jsonc / .dev.vars，然后 http://127.0.0.1:8787

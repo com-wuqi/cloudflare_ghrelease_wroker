@@ -15,6 +15,11 @@ RELEASE_CACHE_TTL=300
 VERIFY_LIMIT_PER_HOUR=10
 DOWNLOAD_LIMIT_PER_HOUR=200
 
+# Admin dashboard (local dev only)
+ADMIN_TOKEN=dev-admin-token-0123456789abcdef
+ADMIN_LIMIT_PER_HOUR=1000
+METRICS_RETENTION_DAYS=30
+
 # Optional: raises GitHub API quota from 60/h to 5000/h.
 # GITHUB_TOKEN=ghp_xxx
 
