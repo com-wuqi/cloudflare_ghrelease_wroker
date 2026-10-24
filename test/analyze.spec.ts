@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DownloadEvent } from '../scripts/lib/analyze.mjs';
 import { parseTailLines, quantile, simulateTtl, summarize } from '../scripts/lib/analyze.mjs';
+import * as sharedStats from '../shared/stats.mjs';
 
 const BASE: Omit<DownloadEvent, 't'> = {
   colo: 'SJC',
@@ -21,9 +22,7 @@ function tailRecord(message: Record<string, unknown>, timestamp = 1_700_000_000_
   return JSON.stringify({
     outcome: 'ok',
     eventTimestamp: timestamp,
-    logs: [
-      { message: [JSON.stringify({ evt: 'dl', ...message })], level: 'log', timestamp },
-    ],
+    logs: [{ message: [JSON.stringify({ evt: 'dl', ...message })], level: 'log', timestamp }],
   });
 }
 
@@ -75,13 +74,13 @@ describe('parseTailLines', () => {
 });
 
 describe('simulateTtl', () => {
+  it('is the same implementation the admin dashboard uses', () => {
+    expect(sharedStats.simulateTtl).toBe(simulateTtl);
+    expect(sharedStats.quantile).toBe(quantile);
+  });
+
   it('counts repeats inside the window as hits', () => {
-    const events = [
-      event({ t: 0 }),
-      event({ t: 1000 }),
-      event({ t: 5000 }),
-      event({ t: 5500 }),
-    ];
+    const events = [event({ t: 0 }), event({ t: 1000 }), event({ t: 5000 }), event({ t: 5500 })];
 
     const result = simulateTtl(events, 2000);
 
@@ -93,10 +92,7 @@ describe('simulateTtl', () => {
   });
 
   it('keeps different colos separate', () => {
-    const events = [
-      event({ t: 0, colo: 'SJC' }),
-      event({ t: 100, colo: 'HKG' }),
-    ];
+    const events = [event({ t: 0, colo: 'SJC' }), event({ t: 100, colo: 'HKG' })];
 
     const result = simulateTtl(events, 3600_000);
     expect(result.hits).toBe(0);
@@ -104,13 +100,21 @@ describe('simulateTtl', () => {
   });
 
   it('keeps different assets separate', () => {
+    const events = [event({ t: 0, asset: 'a.zip' }), event({ t: 100, asset: 'b.zip' })];
+
+    const result = simulateTtl(events, 3600_000);
+    expect(result.hits).toBe(0);
+  });
+
+  it('keeps the same asset name in different repos separate', () => {
     const events = [
-      event({ t: 0, asset: 'a.zip' }),
-      event({ t: 100, asset: 'b.zip' }),
+      event({ t: 0, repo: 'example/app' }),
+      event({ t: 100, repo: 'other-org/other-repo' }),
     ];
 
     const result = simulateTtl(events, 3600_000);
     expect(result.hits).toBe(0);
+    expect(result.misses).toBe(2);
   });
 
   it('never counts Range requests or errors', () => {
@@ -130,17 +134,18 @@ describe('simulateTtl', () => {
   });
 
   it('a hit does not refresh the window (only misses do)', () => {
-    const events = [
-      event({ t: 0 }),
-      event({ t: 1500 }),
-      event({ t: 3000 }),
-      event({ t: 4500 }),
-    ];
+    const events = [event({ t: 0 }), event({ t: 1500 }), event({ t: 3000 }), event({ t: 4500 })];
 
     // ttl 2000: 0 miss, 1500 hit, 3000 miss (3000 - 0 > 2000), 4500 hit
     const result = simulateTtl(events, 2000);
     expect(result.hits).toBe(2);
     expect(result.misses).toBe(2);
+  });
+
+  it('counts an event exactly at the TTL boundary as a hit', () => {
+    const result = simulateTtl([event({ t: 0 }), event({ t: 2000 })], 2000);
+    expect(result.hits).toBe(1);
+    expect(result.misses).toBe(1);
   });
 
   it('handles an empty log', () => {
@@ -174,6 +179,7 @@ describe('summarize', () => {
     expect(summary.bytes).toBe(2000);
     expect(summary.ttfb.p50).toBe(200);
     expect(summary.colos).toEqual([{ colo: 'SJC', requests: 2 }]);
+    expect(summary.assets[0]?.repo).toBe('example/app');
     expect(summary.assets[0]?.asset).toBe('app.zip');
     expect(summary.ttls).toHaveLength(2);
     expect(summary.ttls[0]?.hits).toBe(1);

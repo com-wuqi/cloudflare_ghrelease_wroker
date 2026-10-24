@@ -2,10 +2,10 @@ import { SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import {
-  ORIGIN,
-  REPO,
   authHeaders,
   githubAssetPath,
+  ORIGIN,
+  REPO,
   registerRelease,
   releaseFixture,
   route,
@@ -19,7 +19,8 @@ useUpstreamMock();
 
 const ASSET = 'app-1.0.0.zip';
 const ASSET_URL = `${ORIGIN}/dl/${REPO}/${ASSET}`;
-const ASSET_HOST = 'https://release-assets.githubusercontent.com/github-production-release-asset/1/2?token=abc';
+const ASSET_HOST =
+  'https://release-assets.githubusercontent.com/github-production-release-asset/1/2?token=abc';
 
 function registerDownload(
   body = 'hello world',
@@ -30,14 +31,11 @@ function registerDownload(
     status: 302,
     headers: { location: ASSET_HOST },
   });
-  routeWhere(
-    (url) => url.hostname === 'release-assets.githubusercontent.com',
-    {
-      status,
-      headers: { 'content-type': 'application/zip', ...extraHeaders },
-      body,
-    },
-  );
+  routeWhere((url) => url.hostname === 'release-assets.githubusercontent.com', {
+    status,
+    headers: { 'content-type': 'application/zip', ...extraHeaders },
+    body,
+  });
 }
 
 describe('download gate', () => {
@@ -82,10 +80,14 @@ describe('download gate', () => {
 
   it('forwards a single Range request and returns 206', async () => {
     registerRelease();
-    registerDownload('partial', {
-      'content-range': 'bytes 0-6/11',
-      'content-length': '7',
-    }, 206);
+    registerDownload(
+      'partial',
+      {
+        'content-range': 'bytes 0-6/11',
+        'content-length': '7',
+      },
+      206,
+    );
 
     const response = await SELF.fetch(ASSET_URL, {
       headers: authHeaders(await sessionCookie(), { range: 'bytes=0-6' }),

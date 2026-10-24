@@ -1,5 +1,5 @@
-export { quantile, simulateTtl } from '../../shared/stats.mjs';
 export type { TtlEvent, TtlSimulation } from '../../shared/stats.mjs';
+export { quantile, simulateTtl } from '../../shared/stats.mjs';
 
 export interface DownloadEvent {
   t: number;
@@ -22,7 +22,7 @@ export interface Summary {
   bytes: number;
   ttfb: { p50: number; p95: number };
   handler: { p50: number; p95: number };
-  assets: Array<{ asset: string; requests: number; bytes: number; colos: string[] }>;
+  assets: Array<{ repo: string; asset: string; requests: number; bytes: number; colos: string[] }>;
   colos: Array<{ colo: string; requests: number }>;
   ttls: import('../../shared/stats.mjs').TtlSimulation[];
   firstEventAt: number;
@@ -30,7 +30,4 @@ export interface Summary {
 }
 
 export function parseTailLines(text: string): DownloadEvent[];
-export function summarize(
-  events: DownloadEvent[],
-  ttlsMs: number[],
-): Summary;
+export function summarize(events: DownloadEvent[], ttlsMs: number[]): Summary;

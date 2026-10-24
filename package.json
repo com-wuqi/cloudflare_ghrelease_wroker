@@ -12,17 +12,23 @@
     "deploy": "wrangler deploy",
     "pretypes": "node scripts/bootstrap.mjs",
     "types": "wrangler types --strict-vars false",
+    "types:check": "wrangler types --check --strict-vars false --config wrangler.example.jsonc",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "analyze": "node scripts/analyze-logs.mjs",
     "check": "tsc --noEmit",
-    "verify": "npm run check && npm run test"
+    "lint": "biome check",
+    "format": "biome check --write",
+    "verify": "npm run check && npm run lint && npm run test"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.3",
     "@cloudflare/vitest-plugin": "^1.4.7",
+    "@vitest/coverage-v8": "^4.1.12",
     "@vitest/runner": "^4.1.12",
     "@vitest/snapshot": "^4.1.12",
     "typescript": "~5.9.3",

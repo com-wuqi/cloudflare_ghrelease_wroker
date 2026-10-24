@@ -10,15 +10,22 @@ import {
   signAdminSession,
   verifyAdminSession,
 } from './lib/auth';
+import {
+  methodNotAllowed as httpMethodNotAllowed,
+  notFound as httpNotFound,
+  jsonResponse,
+  redirect,
+} from './lib/http';
+import { requestLogContext } from './lib/log';
 import { clientKey, consumeQuota } from './lib/ratelimit';
 import { isSameHostOrigin } from './lib/security';
-import type { MetricsStub, MetricsSummary } from './metrics-do';
+import type { MetricsSummary } from './metrics-do';
 import {
   RANGES,
+  type RangeOption,
   renderAdminLogin,
   renderAdminPage,
   renderAdminUnavailable,
-  type RangeOption,
 } from './ui-admin';
 
 const MIN_ADMIN_TOKEN_LENGTH = 16;
@@ -26,9 +33,7 @@ const MAX_LOGIN_BODY = 4096;
 const encoder = new TextEncoder();
 
 function adminEnabled(env: Env): boolean {
-  return (
-    typeof env.ADMIN_TOKEN === 'string' && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN_LENGTH
-  );
+  return typeof env.ADMIN_TOKEN === 'string' && env.ADMIN_TOKEN.length >= MIN_ADMIN_TOKEN_LENGTH;
 }
 
 async function sha256(value: string): Promise<Uint8Array> {
@@ -45,38 +50,16 @@ async function constantTimeEqual(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-function notFound(): Response {
-  return new Response('Not Found', {
-    status: 404,
-    headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
-  });
+function adminJson(data: unknown): Response {
+  return jsonResponse(data, 200, { 'x-robots-tag': 'noindex, nofollow' });
 }
 
-function jsonResponse(data: unknown): Response {
-  return new Response(JSON.stringify(data), {
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-      'x-robots-tag': 'noindex, nofollow',
-    },
-  });
+function notFound(): Response {
+  return httpNotFound('text');
 }
 
 function methodNotAllowed(allow: string): Response {
-  return new Response('Method Not Allowed', {
-    status: 405,
-    headers: {
-      'content-type': 'text/plain; charset=utf-8',
-      allow,
-      'cache-control': 'no-store',
-    },
-  });
-}
-
-function redirect(location: string, cookie?: string): Response {
-  const headers = new Headers({ location, 'cache-control': 'no-store' });
-  if (cookie) headers.set('set-cookie', cookie);
-  return new Response(null, { status: 302, headers });
+  return httpMethodNotAllowed(allow, 'text');
 }
 
 function parseRange(raw: string | null): RangeOption {
@@ -93,7 +76,11 @@ async function hasAdminSession(request: Request, env: Env): Promise<boolean> {
 async function handleLogin(request: Request, env: Env): Promise<Response> {
   const origin = request.headers.get('origin');
   if (!isSameHostOrigin(origin, request.url)) {
-    console.error('admin login origin mismatch', { origin, url: request.url });
+    console.error('admin login origin mismatch', {
+      ...requestLogContext(request),
+      origin,
+      url: request.url,
+    });
     return renderAdminLogin('来源不被允许。', 403);
   }
 
@@ -141,29 +128,38 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   return redirect('/admin', buildAdminCookie(token, ADMIN_MAX_TTL_SECONDS));
 }
 
-async function loadSummary(env: Env, days: number): Promise<MetricsSummary | null> {
+async function loadSummary(
+  env: Env,
+  days: number,
+  request?: Request,
+): Promise<MetricsSummary | null> {
   if (!env.METRICS) return null;
   try {
-    const stub = env.METRICS.get(
-      env.METRICS.idFromName('global'),
-    ) as unknown as MetricsStub;
+    const stub = env.METRICS.get(env.METRICS.idFromName('global'));
     return await stub.summary(days);
   } catch (error) {
-    console.error('metrics summary failed', error);
+    console.error('metrics summary failed', request ? requestLogContext(request) : {}, error);
     return null;
   }
 }
 
+const FORMULA_PREFIX = /^[=+\-@\t\r]/;
+
 function csvCell(value: string | number): string {
-  const text = String(value);
+  let text = String(value);
+  // Spreadsheet apps evaluate cells starting with = + - @ (or tab/CR) as
+  // formulas. Repo/asset names can legitimately start with + or -, so escape
+  // them with a leading apostrophe before the usual CSV quoting.
+  if (FORMULA_PREFIX.test(text)) text = `'${text}`;
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
 function csvResponse(summary: MetricsSummary, range: RangeOption): Response {
-  const lines = ['asset,tag,requests,bytes,colos,hit_1h,hit_6h,hit_24h,origin_24h'];
+  const lines = ['repo,asset,tag,requests,bytes,colos,hit_1h,hit_6h,hit_24h,origin_24h'];
   for (const asset of summary.assets) {
     lines.push(
       [
+        csvCell(asset.repo),
         csvCell(asset.asset),
         csvCell(asset.tag),
         asset.requests,
@@ -208,7 +204,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
   if (path === '/admin' || path === '/admin/') {
     if (method !== 'GET' && method !== 'HEAD') return methodNotAllowed('GET, HEAD');
     const range = parseRange(url.searchParams.get('range'));
-    const summary = await loadSummary(env, range.days);
+    const summary = await loadSummary(env, range.days, request);
     if (!summary) return renderAdminUnavailable();
     return renderAdminPage(summary, range);
   }
@@ -216,7 +212,7 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
   if (path === '/admin/export.csv') {
     if (method !== 'GET' && method !== 'HEAD') return methodNotAllowed('GET, HEAD');
     const range = parseRange(url.searchParams.get('range'));
-    const summary = await loadSummary(env, range.days);
+    const summary = await loadSummary(env, range.days, request);
     if (!summary) return renderAdminUnavailable();
     return csvResponse(summary, range);
   }
@@ -224,9 +220,9 @@ export async function handleAdmin(request: Request, env: Env, url: URL): Promise
   if (path === '/admin/data.json') {
     if (method !== 'GET' && method !== 'HEAD') return methodNotAllowed('GET, HEAD');
     const range = parseRange(url.searchParams.get('range'));
-    const summary = await loadSummary(env, range.days);
+    const summary = await loadSummary(env, range.days, request);
     if (!summary) return renderAdminUnavailable();
-    return jsonResponse({ range: range.key, summary });
+    return adminJson({ range: range.key, summary });
   }
 
   return notFound();

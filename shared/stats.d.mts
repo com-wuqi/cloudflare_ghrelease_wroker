@@ -1,6 +1,7 @@
 export interface TtlEvent {
   t: number;
   colo: string;
+  repo: string;
   asset: string;
   size: number;
   status: number;

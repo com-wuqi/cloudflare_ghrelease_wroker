@@ -1,7 +1,7 @@
 import { SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
-import { ORIGIN, TEST_ADMIN_TOKEN, adminCookie, sessionCookie } from './helpers';
+import { adminCookie, ORIGIN, sessionCookie, TEST_ADMIN_TOKEN } from './helpers';
 
 const LOGIN_URL = `${ORIGIN}/admin/login`;
 
@@ -124,7 +124,7 @@ describe('admin gate', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/csv');
     expect(response.headers.get('content-disposition')).toContain('attachment');
-    expect(await response.text()).toContain('asset,tag,requests');
+    expect(await response.text()).toContain('repo,asset,tag,requests');
   });
 
   it('clears the cookie on logout', async () => {

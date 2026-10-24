@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEPLOY_HOST,
+  githubAssetPath,
   ORIGIN,
   REPO,
-  githubAssetPath,
   registerRelease,
   route,
   routeWhere,
@@ -56,7 +56,10 @@ describe('turnstile verification', () => {
 
     // The issued cookie must actually unlock the download route.
     registerRelease();
-    route('github.com', githubAssetPath(ASSET), { status: 302, headers: { location: 'https://release-assets.githubusercontent.com/a/b?x=1' } });
+    route('github.com', githubAssetPath(ASSET), {
+      status: 302,
+      headers: { location: 'https://release-assets.githubusercontent.com/a/b?x=1' },
+    });
     routeWhere((url) => url.hostname === 'release-assets.githubusercontent.com', {
       status: 200,
       headers: { 'content-type': 'application/zip' },

@@ -2,12 +2,12 @@
  * Shared cache-simulation maths, used by both the admin dashboard
  * (Worker -> Durable Object) and scripts/analyze-logs.mjs.
  *
- * Semantics: a per-(colo, asset) TTL cache. Only full 200 responses are
+ * Semantics: a per-(colo, repo, asset) TTL cache. Only full 200 responses are
  * cacheable; a hit does NOT refresh the window, only a miss does.
  */
 
 /**
- * @param {Array<{ t: number, colo: string, asset: string, size: number, status: number, range: boolean }>} events
+ * @param {Array<{ t: number, colo: string, repo: string, asset: string, size: number, status: number, range: boolean }>} events
  * @param {number} ttlMs
  */
 export function simulateTtl(events, ttlMs) {
@@ -15,8 +15,8 @@ export function simulateTtl(events, ttlMs) {
   const groups = new Map();
 
   for (const event of events) {
-    if (!event || event.status !== 200 || event.range) continue;
-    const key = `${event.colo}\u0000${event.asset}`;
+    if (event?.status !== 200 || event.range) continue;
+    const key = `${event.colo}\u0000${event.repo}\u0000${event.asset}`;
     let list = groups.get(key);
     if (!list) {
       list = [];

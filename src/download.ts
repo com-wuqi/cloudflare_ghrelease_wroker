@@ -6,6 +6,8 @@
  * streams it from GitHub while validating every redirect hop.
  */
 
+import { jsonResponse } from './lib/http';
+import { requestLogContext } from './lib/log';
 import { clientKey, consumeQuota } from './lib/ratelimit';
 import {
   contentDisposition,
@@ -13,10 +15,12 @@ import {
   resolveAllowedRedirect,
   sanitizeRange,
 } from './lib/security';
-import type { MetricEvent, MetricsStub } from './metrics-do';
+import type { MetricEvent } from './metrics-do';
 import { findAsset, loadRelease, type ReleaseAsset } from './release';
 
 const MAX_REDIRECTS = 3;
+/** Abort only the wait for response headers; an established stream may run as long as it needs. */
+const UPSTREAM_HEADER_TIMEOUT_MS = 30_000;
 const USER_AGENT = 'akeymux-release-gate (cloudflare worker)';
 
 function errorResponse(
@@ -25,10 +29,7 @@ function errorResponse(
   extraHeaders?: HeadersInit,
   details?: Record<string, unknown>,
 ): Response {
-  const headers = new Headers(extraHeaders);
-  headers.set('content-type', 'application/json; charset=utf-8');
-  headers.set('cache-control', 'no-store');
-  return new Response(JSON.stringify({ error: code, ...details }), { status, headers });
+  return jsonResponse({ error: code, ...details }, status, extraHeaders);
 }
 
 function buildUpstreamHeaders(request: Request): Headers {
@@ -82,6 +83,7 @@ function toClientResponse(upstream: Response, asset: ReleaseAsset, method: strin
 export async function handleDownload(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
   fullName: string,
   assetName: string,
 ): Promise<Response> {
@@ -101,7 +103,7 @@ export async function handleDownload(
   );
   if (!allowed) return errorResponse(429, 'rate_limited', { 'retry-after': '600' });
 
-  const release = await loadRelease(env, fullName);
+  const release = await loadRelease(env, fullName, requestLogContext(request));
   if (!release.info) {
     return errorResponse(502, 'release_unavailable', undefined, {
       reason: release.failure ?? 'upstream_error',
@@ -120,22 +122,42 @@ export async function handleDownload(
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     let upstream: Response;
+    const controller = new AbortController();
+    let timedOut = false;
+    const headerTimer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, UPSTREAM_HEADER_TIMEOUT_MS);
     try {
       upstream = await fetch(current.toString(), {
         method,
         headers: upstreamHeaders,
         redirect: 'manual',
+        signal: controller.signal,
       });
     } catch (error) {
-      console.error('upstream download unreachable', error);
+      console.error(
+        'upstream download unreachable',
+        { ...requestLogContext(request), repo: fullName, asset: assetName, timedOut },
+        error,
+      );
       return errorResponse(502, 'upstream_unreachable');
+    } finally {
+      // Headers are in (or the request failed): do not abort the body stream.
+      clearTimeout(headerTimer);
     }
 
     if (upstream.status >= 300 && upstream.status < 400) {
       await upstream.body?.cancel();
       const next = resolveAllowedRedirect(upstream.headers.get('location'), current);
       if (!next) {
-        console.error('blocked upstream redirect', upstream.status, upstream.headers.get('location'));
+        console.error('blocked upstream redirect', {
+          ...requestLogContext(request),
+          repo: fullName,
+          asset: assetName,
+          status: upstream.status,
+          location: upstream.headers.get('location'),
+        });
         return errorResponse(502, 'blocked_redirect');
       }
       current = next;
@@ -144,13 +166,24 @@ export async function handleDownload(
 
     if (!upstream.ok && upstream.status !== 416) {
       await upstream.body?.cancel();
-      console.error('upstream download failed', upstream.status);
+      console.error('upstream download failed', {
+        ...requestLogContext(request),
+        repo: fullName,
+        asset: assetName,
+        status: upstream.status,
+      });
       return errorResponse(502, 'upstream_error');
     }
 
     const contentType = (upstream.headers.get('content-type') ?? '').toLowerCase();
     if (contentType.startsWith('text/html')) {
       await upstream.body?.cancel();
+      console.error('unexpected upstream content type', {
+        ...requestLogContext(request),
+        repo: fullName,
+        asset: assetName,
+        contentType,
+      });
       return errorResponse(502, 'unexpected_content_type');
     }
 
@@ -166,7 +199,9 @@ export async function handleDownload(
       handlerMs: Date.now() - startedAt,
     });
 
-    await recordMetric(env, metric);
+    // Best effort: never make the download wait on the metrics round-trip.
+    // Best effort: never make the download wait on the metrics round-trip.
+    ctx.waitUntil(recordMetric(env, metric, request));
     console.log(JSON.stringify({ evt: 'dl', ...metric }));
 
     return toClientResponse(upstream, asset, method);
@@ -204,12 +239,12 @@ function buildMetric(request: Request, input: DownloadInput): MetricEvent {
 }
 
 /** Best effort: a metrics failure must never affect the download. */
-async function recordMetric(env: Env, event: MetricEvent): Promise<void> {
+export async function recordMetric(env: Env, event: MetricEvent, request?: Request): Promise<void> {
   if (!env.METRICS) return;
   try {
-    const stub = env.METRICS.get(env.METRICS.idFromName('global')) as unknown as MetricsStub;
+    const stub = env.METRICS.get(env.METRICS.idFromName('global'));
     await stub.record(event);
   } catch (error) {
-    console.error('metrics record failed', error);
+    console.error('metrics record failed', request ? requestLogContext(request) : {}, error);
   }
 }

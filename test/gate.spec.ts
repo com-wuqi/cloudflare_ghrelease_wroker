@@ -2,10 +2,10 @@ import { SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import {
+  authHeaders,
   ORIGIN,
   OTHER_REPO,
   REPO,
-  authHeaders,
   registerRelease,
   route,
   sessionCookie,
@@ -158,9 +158,7 @@ describe('metadata api', () => {
     };
     expect(body.releases).toHaveLength(2);
     expect(body.releases[0]?.repo).toBe(REPO);
-    expect(body.releases[0]?.assets[0]?.path).toBe(
-      `/dl/${REPO}/${encodeURIComponent(ASSET)}`,
-    );
+    expect(body.releases[0]?.assets[0]?.path).toBe(`/dl/${REPO}/${encodeURIComponent(ASSET)}`);
     expect(body.releases[1]?.repo).toBe(OTHER_REPO);
   });
 });

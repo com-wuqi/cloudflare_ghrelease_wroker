@@ -109,10 +109,11 @@ export function renderAdminPage(summary: MetricsSummary, range: RangeOption): Re
 
   const assetRows =
     summary.assets.length === 0
-      ? '<tr><td colspan="7" class="empty">该时间范围内没有下载。</td></tr>'
+      ? '<tr><td colspan="8" class="empty">该时间范围内没有下载。</td></tr>'
       : summary.assets
           .map(
             (asset) => `<tr>
+        <td class="mono">${esc(asset.repo)}</td>
         <td class="mono">${esc(asset.asset)}</td>
         <td class="num">${asset.requests}</td>
         <td class="num">${esc(formatBytes(asset.bytes))}</td>
@@ -154,7 +155,7 @@ export function renderAdminPage(summary: MetricsSummary, range: RangeOption): Re
 
     <div class="cards">${cards}</div>
 
-    <h2 class="section-title">缓存模拟（按 colo + 资产回放）</h2>
+    <h2 class="section-title">缓存模拟（按 colo + 仓库 + 资产回放）</h2>
     <table class="data">
       <thead><tr><th>TTL</th><th class="num">命中</th><th class="num">未命中</th><th class="num">命中率</th><th class="num">回源占比</th><th class="num">可省字节</th></tr></thead>
       <tbody>${ttlRows}</tbody>
@@ -162,7 +163,7 @@ export function renderAdminPage(summary: MetricsSummary, range: RangeOption): Re
 
     <h2 class="section-title">按资产</h2>
     <table class="data">
-      <thead><tr><th>资产</th><th class="num">请求</th><th class="num">字节</th><th>Colo</th><th class="num">1h</th><th class="num">6h</th><th class="num">24h</th></tr></thead>
+      <thead><tr><th>仓库</th><th>资产</th><th class="num">请求</th><th class="num">字节</th><th>Colo</th><th class="num">1h</th><th class="num">6h</th><th class="num">24h</th></tr></thead>
       <tbody>${assetRows}</tbody>
     </table>
 

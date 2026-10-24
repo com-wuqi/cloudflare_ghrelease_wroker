@@ -9,6 +9,7 @@
  * and `/api/releases` can explain *why* GitHub was unreachable.
  */
 
+import { clampInt } from './lib/config';
 import { isAllowedAssetUrl, isSafeName } from './lib/security';
 
 export interface ReleaseAsset {
@@ -49,9 +50,7 @@ export function releaseCacheKey(fullName: string): string {
 }
 
 function cacheTtlMs(env: Env): number {
-  const seconds = Number.parseInt(env.RELEASE_CACHE_TTL ?? '300', 10);
-  if (!Number.isFinite(seconds) || seconds < 0) return 300_000;
-  return Math.min(seconds, 3600) * 1000;
+  return clampInt(env.RELEASE_CACHE_TTL, 300, 0, 3600) * 1000;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -82,7 +81,11 @@ function belongsToRepo(rawUrl: unknown, fullName: string, kind: 'api' | 'html'):
 
 type FetchOutcome = { info: ReleaseInfo } | { failure: ReleaseFailure };
 
-async function fetchLatest(env: Env, fullName: string): Promise<FetchOutcome> {
+async function fetchLatest(
+  env: Env,
+  fullName: string,
+  context: Record<string, unknown>,
+): Promise<FetchOutcome> {
   const headers: Record<string, string> = {
     accept: 'application/vnd.github+json',
     'x-github-api-version': '2022-11-28',
@@ -98,17 +101,19 @@ async function fetchLatest(env: Env, fullName: string): Promise<FetchOutcome> {
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
   } catch (error) {
-    console.error('github releases/latest network error', error);
+    console.error('github releases/latest network error', { ...context, repo: fullName }, error);
     return { failure: 'network' };
   }
 
   if (!response.ok) {
     console.error('github releases/latest failed', {
+      ...context,
+      repo: fullName,
       status: response.status,
       token: hasToken ? 'present' : 'missing',
       remaining: response.headers.get('x-ratelimit-remaining'),
       reset: response.headers.get('x-ratelimit-reset'),
-      message: await response.text().catch(() => ''),
+      message: (await response.text().catch(() => '')).slice(0, 2048),
     });
     return { failure: classifyStatus(response.status) };
   }
@@ -117,7 +122,7 @@ async function fetchLatest(env: Env, fullName: string): Promise<FetchOutcome> {
   try {
     payload = asRecord(await response.json());
   } catch (error) {
-    console.error('github releases/latest invalid json', error);
+    console.error('github releases/latest invalid json', { ...context, repo: fullName }, error);
     return { failure: 'invalid_response' };
   }
   if (!payload) return { failure: 'invalid_response' };
@@ -135,7 +140,8 @@ async function fetchLatest(env: Env, fullName: string): Promise<FetchOutcome> {
       if (!asset) continue;
 
       const name = typeof asset.name === 'string' ? asset.name : '';
-      const rawUrl = typeof asset.browser_download_url === 'string' ? asset.browser_download_url : '';
+      const rawUrl =
+        typeof asset.browser_download_url === 'string' ? asset.browser_download_url : '';
       if (!isSafeName(name)) continue;
 
       const url = isAllowedAssetUrl(rawUrl, fullName);
@@ -165,7 +171,11 @@ async function fetchLatest(env: Env, fullName: string): Promise<FetchOutcome> {
   };
 }
 
-export async function loadRelease(env: Env, fullName: string): Promise<ReleaseResult> {
+export async function loadRelease(
+  env: Env,
+  fullName: string,
+  context: Record<string, unknown> = {},
+): Promise<ReleaseResult> {
   const cache = caches.default;
   const key = releaseCacheKey(fullName);
 
@@ -174,7 +184,7 @@ export async function loadRelease(env: Env, fullName: string): Promise<ReleaseRe
     const cached = await cache.match(key);
     if (cached) stored = (await cached.json()) as ReleaseInfo;
   } catch (error) {
-    console.error('release cache read failed', error);
+    console.error('release cache read failed', { ...context, repo: fullName }, error);
     stored = null;
   }
 
@@ -182,7 +192,7 @@ export async function loadRelease(env: Env, fullName: string): Promise<ReleaseRe
   const ttl = cacheTtlMs(env);
   if (stored && ttl > 0 && now - stored.fetchedAt < ttl) return { info: stored, failure: null };
 
-  const outcome = await fetchLatest(env, fullName);
+  const outcome = await fetchLatest(env, fullName, context);
   if ('info' in outcome) {
     try {
       await cache.put(
@@ -196,13 +206,17 @@ export async function loadRelease(env: Env, fullName: string): Promise<ReleaseRe
       );
     } catch (error) {
       // A cache failure must not break downloads.
-      console.error('release cache write failed', error);
+      console.error('release cache write failed', { ...context, repo: fullName }, error);
     }
     return { info: outcome.info, failure: null };
   }
 
   if (stored && now - stored.fetchedAt < STALE_FALLBACK_MS) {
-    console.error('serving stale release metadata', outcome.failure);
+    console.error('serving stale release metadata', {
+      ...context,
+      repo: fullName,
+      failure: outcome.failure,
+    });
     return { info: stored, failure: null };
   }
   return { info: null, failure: outcome.failure };

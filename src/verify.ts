@@ -14,19 +14,15 @@ import {
   signSession,
   subjectFor,
 } from './lib/auth';
+import { clampInt } from './lib/config';
+import { jsonResponse as json } from './lib/http';
+import { requestLogContext } from './lib/log';
 import { clientKey, consumeQuota } from './lib/ratelimit';
 import { isSameHostOrigin, safeNextPath } from './lib/security';
 
 const SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const MAX_BODY_BYTES = 4096;
 const DEFAULT_TTL_SECONDS = 3600;
-
-function json(data: unknown, status = 200, extraHeaders?: HeadersInit): Response {
-  const headers = new Headers(extraHeaders);
-  headers.set('content-type', 'application/json; charset=utf-8');
-  headers.set('cache-control', 'no-store');
-  return new Response(JSON.stringify(data), { status, headers });
-}
 
 function isTurnstileTestSecret(secret: string): boolean {
   return (
@@ -37,9 +33,7 @@ function isTurnstileTestSecret(secret: string): boolean {
 }
 
 function sessionTtl(env: Env): number {
-  const raw = Number.parseInt(env.SESSION_TTL_SECONDS ?? '', 10);
-  if (!Number.isFinite(raw)) return DEFAULT_TTL_SECONDS;
-  return Math.min(Math.max(raw, 300), 7200);
+  return clampInt(env.SESSION_TTL_SECONDS, DEFAULT_TTL_SECONDS, 300, 7200);
 }
 
 function parseBody(raw: string): Record<string, unknown> | null {
@@ -111,11 +105,11 @@ export async function handleVerify(request: Request, env: Env): Promise<Response
       await response.body?.cancel();
     }
   } catch (error) {
-    console.error('turnstile siteverify error', error);
+    console.error('turnstile siteverify error', requestLogContext(request), error);
     return json({ error: 'verification_unavailable' }, 502);
   }
 
-  if (!verification || verification.success !== true) {
+  if (verification?.success !== true) {
     return json({ error: 'verification_failed' }, 401);
   }
 
@@ -128,7 +122,14 @@ export async function handleVerify(request: Request, env: Env): Promise<Response
     returnedHost === requestHost ||
     returnedHost === 'example.com' ||
     (returnedHost === '' && isTurnstileTestSecret(turnstileSecret));
-  if (!hostOk) return json({ error: 'hostname_mismatch' }, 401);
+  if (!hostOk) {
+    console.error('turnstile hostname mismatch', {
+      ...requestLogContext(request),
+      returnedHost,
+      requestHost,
+    });
+    return json({ error: 'hostname_mismatch' }, 401);
+  }
 
   const ttl = sessionTtl(env);
   const nowSeconds = Math.floor(Date.now() / 1000);

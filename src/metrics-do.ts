@@ -1,11 +1,15 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import { quantile, simulateTtl, type TtlEvent, type TtlSimulation } from '../shared/stats.mjs';
+import { clampInt } from './lib/config';
 
 const TTL_WINDOWS = [3_600_000, 6 * 3_600_000, 24 * 3_600_000];
 const MAX_ROWS = 50_000;
 const DEFAULT_RETENTION_DAYS = 30;
-const PRUNE_EVERY_WRITES = 200;
+/** The dashboard only exposes up to 30 days, so retaining more is dead data. */
+const MAX_RETENTION_DAYS = 30;
+const SUMMARY_CACHE_MS = 30_000;
+const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export interface MetricEvent {
   ts: number;
@@ -24,6 +28,7 @@ export interface MetricEvent {
 }
 
 export interface AssetStats {
+  repo: string;
   asset: string;
   tag: string;
   requests: number;
@@ -54,13 +59,9 @@ export interface MetricsSummary {
   truncated: boolean;
 }
 
-export interface MetricsStub {
-  record(event: MetricEvent): Promise<void>;
-  summary(days: number): Promise<MetricsSummary>;
-}
-
 interface EventRow {
   ts: number;
+  repo: string;
   colo: string;
   country: string;
   asset: string;
@@ -73,14 +74,14 @@ interface EventRow {
 }
 
 function clampDays(days: number): number {
-  if (!Number.isFinite(days)) return 7;
-  return Math.min(Math.max(Math.trunc(days), 1), 30);
+  return clampInt(days, 7, 1, MAX_RETENTION_DAYS);
 }
 
 function toTtlEvent(row: EventRow): TtlEvent {
   return {
     t: Number(row.ts),
     colo: String(row.colo),
+    repo: String(row.repo),
     asset: String(row.asset),
     size: Number(row.size),
     status: Number(row.status),
@@ -105,7 +106,7 @@ function isSuccessful(row: EventRow): boolean {
  * is plenty and keeps the deployment free of external services.
  */
 export class MetricsDO extends DurableObject<Env> {
-  private writes = 0;
+  private summaryCache = new Map<string, { at: number; value: MetricsSummary }>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -128,6 +129,14 @@ export class MetricsDO extends DurableObject<Env> {
       )
     `);
     ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts)');
+
+    // Retention is enforced even when no downloads happen, so old rows cannot
+    // accumulate in an idle deployment.
+    ctx.blockConcurrencyWhile(async () => {
+      if ((await ctx.storage.getAlarm()) === null) {
+        await ctx.storage.setAlarm(Date.now() + PRUNE_INTERVAL_MS);
+      }
+    });
   }
 
   async record(event: MetricEvent): Promise<void> {
@@ -150,23 +159,30 @@ export class MetricsDO extends DurableObject<Env> {
       event.handlerMs,
     );
 
-    this.writes += 1;
-    if (this.writes % PRUNE_EVERY_WRITES === 0) this.prune();
+    this.summaryCache.clear();
   }
 
-  async summary(days: number): Promise<MetricsSummary> {
+  async summary(days: number, maxRows = MAX_ROWS): Promise<MetricsSummary> {
     const windowDays = clampDays(days);
+    const limit = Math.min(Math.max(Math.trunc(maxRows), 1), MAX_ROWS);
+
+    const cacheKey = `${windowDays}:${limit}`;
+    const cached = this.summaryCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < SUMMARY_CACHE_MS) return cached.value;
+
     const cutoff = Date.now() - windowDays * 86_400_000;
 
+    // Newest first: when the window holds more than `limit` rows we drop the
+    // oldest events, so the dashboard always reflects recent traffic.
     const rows = this.ctx.storage.sql
       .exec(
-        `SELECT ts, colo, country, asset, tag, size, status, is_range, upstream_ms, handler_ms
+        `SELECT ts, repo, colo, country, asset, tag, size, status, is_range, upstream_ms, handler_ms
          FROM events
          WHERE ts >= ?
-         ORDER BY ts
+         ORDER BY ts DESC
          LIMIT ?`,
         cutoff,
-        MAX_ROWS,
+        limit,
       )
       .toArray() as unknown as EventRow[];
 
@@ -188,10 +204,14 @@ export class MetricsDO extends DurableObject<Env> {
     const colos = new Map<string, ColoStats>();
 
     for (const row of successful) {
+      const repoName = String(row.repo);
       const assetName = String(row.asset);
-      let asset = assets.get(assetName);
+      const assetKey = `${repoName}\u0000${assetName}`;
+      let asset = assets.get(assetKey);
       if (!asset) {
+        // Rows are newest-first, so the first occurrence carries the latest tag.
         asset = {
+          repo: repoName,
           asset: assetName,
           tag: String(row.tag),
           requests: 0,
@@ -200,7 +220,7 @@ export class MetricsDO extends DurableObject<Env> {
           ttls: [],
           events: [],
         };
-        assets.set(assetName, asset);
+        assets.set(assetKey, asset);
       }
       asset.requests += 1;
       asset.bytes += Number(row.size);
@@ -219,6 +239,7 @@ export class MetricsDO extends DurableObject<Env> {
 
     const assetList: AssetStats[] = [...assets.values()]
       .map((asset) => ({
+        repo: asset.repo,
         asset: asset.asset,
         tag: asset.tag,
         requests: asset.requests,
@@ -226,15 +247,20 @@ export class MetricsDO extends DurableObject<Env> {
         colos: asset.colos.sort(),
         ttls: TTL_WINDOWS.map((ttl) => simulateTtl(asset.events, ttl)),
       }))
-      .sort((a, b) => b.requests - a.requests || a.asset.localeCompare(b.asset));
+      .sort(
+        (a, b) =>
+          b.requests - a.requests || a.repo.localeCompare(b.repo) || a.asset.localeCompare(b.asset),
+      );
 
     const coloList: ColoStats[] = [...colos.values()].sort(
       (a, b) => b.requests - a.requests || a.colo.localeCompare(b.colo),
     );
 
-    const timestamps = successful.map((row) => Number(row.ts));
+    // Successful rows are newest-first, so the last one is the oldest.
+    const firstTs = successful.length > 0 ? Number(successful[successful.length - 1]?.ts) : 0;
+    const lastTs = successful.length > 0 ? Number(successful[0]?.ts) : 0;
 
-    return {
+    const result: MetricsSummary = {
       days: windowDays,
       requests: successful.length,
       cacheable: cacheable.length,
@@ -244,20 +270,29 @@ export class MetricsDO extends DurableObject<Env> {
       ttfb: { p50: quantile(ttfbValues, 0.5), p95: quantile(ttfbValues, 0.95) },
       handler: { p50: quantile(handlerValues, 0.5), p95: quantile(handlerValues, 0.95) },
       ttls: TTL_WINDOWS.map((ttl) => simulateTtl(events, ttl)),
-      firstTs: timestamps.length > 0 ? Math.min(...timestamps) : 0,
-      lastTs: timestamps.length > 0 ? Math.max(...timestamps) : 0,
-      truncated: rows.length >= MAX_ROWS,
+      firstTs,
+      lastTs,
+      truncated: rows.length >= limit,
     };
+
+    this.summaryCache.set(cacheKey, { at: Date.now(), value: result });
+    return result;
+  }
+
+  /** Runs daily so retention does not depend on download volume. */
+  async alarm(): Promise<void> {
+    this.prune();
+    this.summaryCache.clear();
+    await this.ctx.storage.setAlarm(Date.now() + PRUNE_INTERVAL_MS);
   }
 
   private retentionDays(): number {
-    const raw = Number.parseInt(this.env.METRICS_RETENTION_DAYS ?? '', 10);
-    if (!Number.isFinite(raw)) return DEFAULT_RETENTION_DAYS;
-    return Math.min(Math.max(raw, 1), 365);
+    return clampInt(this.env.METRICS_RETENTION_DAYS, DEFAULT_RETENTION_DAYS, 1, MAX_RETENTION_DAYS);
   }
 
   private prune(): void {
     const cutoff = Date.now() - this.retentionDays() * 86_400_000;
     this.ctx.storage.sql.exec('DELETE FROM events WHERE ts < ?', cutoff);
+    this.summaryCache.clear();
   }
 }

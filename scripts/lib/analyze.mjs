@@ -122,6 +122,7 @@ export function parseTailLines(text) {
  * this offline tool share exactly the same semantics.
  */
 import { quantile, simulateTtl } from '../../shared/stats.mjs';
+
 export { quantile, simulateTtl };
 
 /**
@@ -134,16 +135,17 @@ export function summarize(events, ttlsMs) {
   const ttfb = successful.map((event) => event.upstreamMs).filter((value) => value > 0);
   const handler = successful.map((event) => event.handlerMs).filter((value) => value > 0);
 
-  /** @type {Map<string, { requests: number, bytes: number, colos: Set<string> }>} */
+  /** @type {Map<string, { repo: string, asset: string, requests: number, bytes: number, colos: Set<string> }>} */
   const assets = new Map();
   /** @type {Map<string, number>} */
   const colos = new Map();
 
   for (const event of successful) {
-    let entry = assets.get(event.asset);
+    const key = `${event.repo}\u0000${event.asset}`;
+    let entry = assets.get(key);
     if (!entry) {
-      entry = { requests: 0, bytes: 0, colos: new Set() };
-      assets.set(event.asset, entry);
+      entry = { repo: event.repo, asset: event.asset, requests: 0, bytes: 0, colos: new Set() };
+      assets.set(key, entry);
     }
     entry.requests += 1;
     entry.bytes += event.size;
@@ -163,14 +165,18 @@ export function summarize(events, ttlsMs) {
       p50: quantile(handler, 0.5),
       p95: quantile(handler, 0.95),
     },
-    assets: [...assets.entries()]
-      .map(([asset, entry]) => ({
-        asset,
+    assets: [...assets.values()]
+      .map((entry) => ({
+        repo: entry.repo,
+        asset: entry.asset,
         requests: entry.requests,
         bytes: entry.bytes,
         colos: [...entry.colos].sort(),
       }))
-      .sort((a, b) => b.requests - a.requests),
+      .sort(
+        (a, b) =>
+          b.requests - a.requests || a.repo.localeCompare(b.repo) || a.asset.localeCompare(b.asset),
+      ),
     colos: [...colos.entries()]
       .map(([colo, requests]) => ({ colo, requests }))
       .sort((a, b) => b.requests - a.requests),

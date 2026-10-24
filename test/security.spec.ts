@@ -4,8 +4,8 @@ import { signSession, verifySession } from '../src/lib/auth';
 import {
   contentDisposition,
   isAllowedAssetUrl,
-  isSameHostOrigin,
   isSafeName,
+  isSameHostOrigin,
   matchRepo,
   parseRepoList,
   pathSegments,
@@ -23,15 +23,12 @@ describe('pathSegments', () => {
     expect(pathSegments('/dl/owner/repo/a+b.zip')).toEqual(['dl', 'owner', 'repo', 'a+b.zip']);
   });
 
-  it.each([
-    '/dl//repo/a.zip',
-    '/dl/owner/repo/',
-    '',
-    'dl/owner',
-    '/dl/owner/repo/a/b/c/d/e/f',
-  ])('rejects structural garbage %s', (value) => {
-    expect(pathSegments(value)).toBeNull();
-  });
+  it.each(['/dl//repo/a.zip', '/dl/owner/repo/', '', 'dl/owner', '/dl/owner/repo/a/b/c/d/e/f'])(
+    'rejects structural garbage %s',
+    (value) => {
+      expect(pathSegments(value)).toBeNull();
+    },
+  );
 
   it.each([
     '/dl/owner/repo/..',

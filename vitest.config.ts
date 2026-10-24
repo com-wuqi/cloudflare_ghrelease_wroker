@@ -28,5 +28,17 @@ export default defineConfig({
   test: {
     include: ['test/**/*.spec.ts'],
     testTimeout: 20000,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'text-summary'],
+      include: ['src/**/*.ts', 'shared/**/*.mjs', 'scripts/lib/**/*.mjs'],
+      exclude: ['src/assets.ts'],
+      thresholds: {
+        statements: 88,
+        branches: 70,
+        functions: 92,
+        lines: 89,
+      },
+    },
   },
 });

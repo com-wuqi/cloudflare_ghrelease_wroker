@@ -127,12 +127,8 @@ function main() {
   }
 
   console.log(`文件: ${args.file}`);
-  console.log(
-    `下载事件: ${summary.totalEvents} 条（成功且非 Range: ${summary.successful} 条）`,
-  );
-  console.log(
-    `时间范围: ${formatTime(summary.firstEventAt)} ~ ${formatTime(summary.lastEventAt)}`,
-  );
+  console.log(`下载事件: ${summary.totalEvents} 条（成功且非 Range: ${summary.successful} 条）`);
+  console.log(`时间范围: ${formatTime(summary.firstEventAt)} ~ ${formatTime(summary.lastEventAt)}`);
 
   if (summary.totalEvents === 0) {
     console.error('[analyze] 没有找到下载事件。确认日志里有 {"evt":"dl",...} 行。');
@@ -141,9 +137,7 @@ function main() {
   }
 
   if (summary.colos.length > 0) {
-    console.log(
-      `Colo 分布: ${summary.colos.map((c) => `${c.colo}=${c.requests}`).join('  ')}`,
-    );
+    console.log(`Colo 分布: ${summary.colos.map((c) => `${c.colo}=${c.requests}`).join('  ')}`);
   }
 
   console.log(
@@ -154,7 +148,7 @@ function main() {
   );
   console.log(`字节总量: ${formatBytes(summary.bytes)}`);
 
-  console.log('\n按 TTL 模拟（同一 colo + 同一资产的重复请求视为可命中）:');
+  console.log('\n按 TTL 模拟（同一 colo + 同一仓库 + 同一资产的重复请求视为可命中）:');
   console.log('  TTL      命中    未命中   命中率    回源占比   可省字节');
   for (const ttl of summary.ttls) {
     console.log(
@@ -167,10 +161,10 @@ function main() {
   }
 
   if (summary.assets.length > 0) {
-    console.log('\n按资产:');
+    console.log('\n按仓库/资产:');
     for (const asset of summary.assets.slice(0, 10)) {
       console.log(
-        `  ${asset.asset}  requests=${asset.requests}  bytes=${formatBytes(asset.bytes)}  colos=${asset.colos.join(',')}`,
+        `  ${asset.repo}/${asset.asset}  requests=${asset.requests}  bytes=${formatBytes(asset.bytes)}  colos=${asset.colos.join(',')}`,
       );
     }
   }

@@ -59,7 +59,9 @@ export async function signSession(session: Session, secret: string): Promise<str
   if (session.exp <= session.iat) throw new Error('invalid session window');
   if (session.exp - session.iat > MAX_TTL_SECONDS) throw new Error('session TTL too long');
 
-  const payload = ['v1', String(session.iat), String(session.exp), session.jti, session.sub].join('.');
+  const payload = ['v1', String(session.iat), String(session.exp), session.jti, session.sub].join(
+    '.',
+  );
   const key = await importKey(secret);
   const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(payload)));
   return `${payload}.${base64UrlEncode(signature)}`;

@@ -8,7 +8,7 @@ export const HTML_CSP = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "connect-src 'self'",
-  "frame-src https://challenges.cloudflare.com",
+  'frame-src https://challenges.cloudflare.com',
   "base-uri 'none'",
   "form-action 'self'",
   "frame-ancestors 'none'",
@@ -109,8 +109,7 @@ export interface RepoView {
 }
 
 const FAILURE_MESSAGES: Record<ReleaseFailure, string> = {
-  rate_limited:
-    'GitHub API 触发限流（403/429）。请为 Worker 配置 GITHUB_TOKEN，或稍后再试。',
+  rate_limited: 'GitHub API 触发限流（403/429）。请为 Worker 配置 GITHUB_TOKEN，或稍后再试。',
   not_found: '仓库不存在、还没有已发布的 Release，或 token 无权访问该仓库。',
   unauthorized: '访问 GitHub API 被拒绝（401），请检查 GITHUB_TOKEN 是否有效。',
   network: '无法连接 GitHub API，请稍后重试。',

@@ -5,7 +5,7 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 - 白名单仓库：`example/app`（在 `wrangler.jsonc` 的 `REPOS` 中修改，逗号分隔，最多 20 个）
 - 只代理 `/releases/latest`，不支持任意 tag、不支持任意 URL
 - 运行时零依赖；发布配置只在本地，仓库里是占位符模板
-- 136 个测试覆盖路径穿越、伪造会话、恶意重定向等绕过场景
+- 181 个测试覆盖路径穿越、伪造会话、恶意重定向等绕过场景
 
 ---
 
@@ -56,17 +56,19 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 .
 ├─ wrangler.example.jsonc    部署配置模板（占位符，入库）
 ├─ wrangler.jsonc            真实部署配置（gitignore，本地填写）
+├─ biome.json                Biome lint + format 配置
 ├─ worker-configuration.d.ts 由 `npm run types` 生成
 ├─ vitest.config.ts          测试环境（Cloudflare Workers runtime，使用 example 配置）
 ├─ .dev.vars                 本地开发密钥（gitignore）
 ├─ .dev.vars.example         本地开发模板
 ├─ scripts/
 │  ├─ bootstrap.mjs          首次运行自动复制模板
-│  ├─ check-config.mjs       部署前检查占位符
+│  ├─ check-config.mjs       部署前结构校验（域名/仓库/KV/DO）
 │  ├─ analyze-logs.mjs       缓存收益分析（读 wrangler tail NDJSON）
 │  └─ lib/analyze.mjs        纯函数：解析 / TTL 回放 / 汇总
 ├─ shared/stats.mjs          管理页与离线脚本共用的 TTL 回放
-├─ .github/workflows/ci.yml  CI：check + test
+├─ .github/workflows/ci.yml  CI：check + lint + types + coverage + dry-run
+├─ .github/dependabot.yml    依赖与 Actions 周更
 ├─ SECURITY.md               漏洞报告流程
 ├─ LICENSE                   MIT
 ├─ src/
@@ -82,9 +84,11 @@ Cloudflare Worker：**先通过 Turnstile 人机验证，再代理下载 GitHub 
 │  ├─ env.d.ts               补充 secrets 类型
 │  └─ lib/
 │     ├─ auth.ts             HMAC 会话 + 管理员令牌
+│     ├─ config.ts           数值配置解析 + clamp
+│     ├─ http.ts             通用 JSON / 文本 / 重定向响应
 │     ├─ security.ts         路径 / URL / Range / 文件名校验
 │     └─ ratelimit.ts        KV 限流
-└─ test/                     157 个测试（含绕过用例）
+└─ test/                     181 个测试（含绕过用例）
 ```
 
 ## 本地开发
@@ -100,7 +104,10 @@ npm run dev          # 首次会自动从 example 生成 wrangler.jsonc / .dev.v
 ```powershell
 npm run bootstrap    # 手动生成缺失的 wrangler.jsonc / .dev.vars
 npm run check        # tsc --noEmit
+npm run lint         # biome check（格式 + lint）
 npm test             # vitest（Workers runtime）
+npm run test:coverage  # vitest + V8 覆盖率（有门槛）
+npm run types:check  # 校验 worker-configuration.d.ts 是否过期
 npm run types        # 修改 wrangler.jsonc 后重新生成 Env 类型
 ```
 
@@ -180,7 +187,7 @@ npm run types        # 修改 wrangler.jsonc 后重新生成 Env 类型
 | `VERIFY_LIMIT_PER_HOUR` | `10` | 每 IP 每小时验证次数 |
 | `DOWNLOAD_LIMIT_PER_HOUR` | `200` | 每 IP 每小时下载次数 |
 | `ADMIN_LIMIT_PER_HOUR` | `10` | 每 IP 每小时管理登录尝试次数 |
-| `METRICS_RETENTION_DAYS` | `30` | 下载事件保留天数（1–365） |
+| `METRICS_RETENTION_DAYS` | `30` | 下载事件保留天数（1–30，与管理页区间一致） |
 
 Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`、`ADMIN_TOKEN`（均必需）、`GITHUB_TOKEN`（可选）、`SESSION_BIND_IP=1`（可选，把会话绑定到 IP + UA）。
 
@@ -194,24 +201,32 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`、`ADMIN_TOKEN`（均必需）�
 | --- | --- |
 | `GET /admin/login` | 输入 `ADMIN_TOKEN` 的表单 |
 | `POST /admin/login` | 校验令牌，下发 12 小时 `dl_admin` Cookie（`HttpOnly; Secure; SameSite=Strict; Path=/admin`） |
-| `GET /admin?range=24h\|7d\|30d` | 统计页：请求数、可缓存数、字节、TTL 命中率/回源占比、按资产、按 colo、TTFB p50/p95 |
+| `GET /admin?range=24h\|7d\|30d` | 统计页：请求数、可缓存数、字节、TTL 命中率/回源占比、按仓库/资产、按 colo、TTFB p50/p95 |
 | `GET /admin/data.json` | 同一份数据的 JSON（需管理员 Cookie） |
-| `GET /admin/export.csv` | 按资产的 CSV 导出 |
+| `GET /admin/export.csv` | 按仓库/资产的 CSV 导出 |
 | `GET /admin/logout` | 清除管理员 Cookie |
 
 实现方式：
 
 - 每次通过验证的下载（200/206）写入一个 SQLite Durable Object（`MetricsDO`），只记 `colo / country / asn / repo / tag / asset / size / status / range / upstreamMs`，**不记 IP、Cookie、token**
-- `METRICS_RETENTION_DAYS` 到期自动清理
-- TTL 命中率与 `npm run analyze` 使用同一份 `shared/stats.mjs`，两边口径一致
+- `METRICS_RETENTION_DAYS` 到期自动清理（每天由 DO alarm 执行，不依赖下载量）
+- TTL 命中率与 `npm run analyze` 使用同一份 `shared/stats.mjs`，两边口径一致（按 colo + 仓库 + 资产回放）
 - `ADMIN_TOKEN` 未配置时 `/admin*` 直接 404；登录失败按 IP 限流；令牌比较使用 SHA-256 摘要 + 常量时间比较
 - 管理员 Cookie 使用独立的 `a1.` 前缀，下载会话的 `v1.` 令牌无法当作管理员令牌使用
+
+统计口径（避免误读）：
+
+- 只记录**通过校验且回源成功**的下载（200/206）；401、404、扫描流量不进入统计
+- `bytes` 取 Release 资产的 `size`，Range（206）只传了部分字节但按整文件累加
+- TTL 命中率是“如果加缓存”的**模拟值**，不是真实缓存命中率
+- 单次查询最多 5 万行，超出时保留**最新**事件；窗口与保留期均为 30 天
+- 聚合键是 `repo + asset`，不同仓库的同名资产不会合并
 
 > 如果启用了“减少扫描流量”里的 WAF 放行规则，记得把 `/admin` 和 `/admin/*` 加进去，否则管理页会被边缘拦截。
 
 ## 测试覆盖
 
-`npm test` 共 157 个用例，包含：
+`npm test` 共 181 个用例，包含：
 
 - 未带 Cookie / 伪造签名 / 篡改 payload / 换密钥签名 / 过期会话 → 401，且断言 **0 次回源**
 - `..%2f`、`%252e%252e`、`%2f`、`%5c`、`%00`、超长段、多余段、尾斜杠 → 400/404，且 0 次回源
@@ -252,7 +267,7 @@ Secrets：`TURNSTILE_SECRET`、`SESSION_SECRET`、`ADMIN_TOKEN`（均必需）�
 
 3. 可选：**Security → Bots** 打开 Bot Fight Mode。
 
-`wrangler.jsonc` 里 `observability.head_sampling_rate` 已设成 `0.1`，日志只保留 10% 采样，避免被扫描流量刷屏。
+`wrangler.jsonc` 里 `observability.head_sampling_rate` 已设成 `0.1`，日志只保留 10% 采样，避免被扫描流量刷屏。这个采样只影响 Dashboard 的 Workers Logs；`wrangler tail` 不受影响，排障时优先用 tail。
 
 ## 测量缓存收益（可选）
 
@@ -283,7 +298,7 @@ npm run analyze -- tail.ndjson --ttl 3600,21600,86400
 Colo 分布: SJC=90  HKG=30  NRT=8
 回源 TTFB: p50=0.42s  p95=1.10s
 
-按 TTL 模拟（同一 colo + 同一资产的重复请求视为可命中）:
+按 TTL 模拟（同一 colo + 同一仓库 + 同一资产的重复请求视为可命中）:
   TTL      命中    未命中   命中率    回源占比   可省字节
   1h       18      103     14.9%     85.1%     1.1 GB
   6h       41      80      33.9%     66.1%     2.5 GB

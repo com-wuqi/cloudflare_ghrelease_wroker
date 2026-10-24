@@ -5,6 +5,8 @@
  * anti-abuse control, so a KV outage must not lock users out.
  */
 
+import { clampInt } from './config';
+
 export function clientIp(request: Request): string {
   const header = request.headers.get('cf-connecting-ip');
   if (header && /^[0-9a-fA-F:.]{3,45}$/.test(header)) return header;
@@ -23,9 +25,7 @@ export async function clientKey(request: Request): Promise<string> {
 }
 
 function positiveInt(raw: string | undefined, fallback: number): number {
-  const value = Number.parseInt(raw ?? '', 10);
-  if (!Number.isFinite(value) || value <= 0) return fallback;
-  return Math.min(value, 100000);
+  return clampInt(raw, fallback, 1, 100000);
 }
 
 /**

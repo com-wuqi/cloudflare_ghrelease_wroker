@@ -78,11 +78,7 @@ export function restoreUpstreamMock(): void {
 }
 
 /** Matches on hostname + exact pathname. */
-export function route(
-  host: string,
-  pathname: string,
-  result: MockResult | RouteResponder,
-): void {
+export function route(host: string, pathname: string, result: MockResult | RouteResponder): void {
   routes.push({
     match: (url) => url.hostname === host && url.pathname === pathname,
     respond: typeof result === 'function' ? result : () => result,
@@ -90,22 +86,20 @@ export function route(
 }
 
 /** Matches on hostname only (or any predicate). */
-export function routeWhere(
-  predicate: RouteMatcher,
-  result: MockResult | RouteResponder,
-): void {
+export function routeWhere(predicate: RouteMatcher, result: MockResult | RouteResponder): void {
   routes.push({ match: predicate, respond: typeof result === 'function' ? result : () => result });
 }
 
 export function releaseFixture(
   assets: Array<{ name: string; size?: number }> = [{ name: 'app-1.0.0.zip' }],
   tag = 'v1.0.0',
+  repo = REPO,
 ): Record<string, unknown> {
   // Mirrors the real GitHub release schema: note there is no `full_name` field.
   return {
-    url: `https://api.github.com/repos/${REPO}/releases/42`,
-    html_url: `https://github.com/${REPO}/releases/tag/${tag}`,
-    assets_url: `https://api.github.com/repos/${REPO}/releases/42/assets`,
+    url: `https://api.github.com/repos/${repo}/releases/42`,
+    html_url: `https://github.com/${repo}/releases/tag/${tag}`,
+    assets_url: `https://api.github.com/repos/${repo}/releases/42/assets`,
     id: 42,
     tag_name: tag,
     target_commitish: 'main',
@@ -120,7 +114,7 @@ export function releaseFixture(
       download_count: 7,
       content_type: 'application/octet-stream',
       state: 'uploaded',
-      browser_download_url: `https://github.com/${REPO}/releases/download/${tag}/${encodeURIComponent(asset.name)}`,
+      browser_download_url: `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(asset.name)}`,
     })),
   };
 }
@@ -133,7 +127,7 @@ export function registerRelease(
   route('api.github.com', `/repos/${repo}/releases/latest`, {
     status: 200,
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(releaseFixture(assets, tag)),
+    body: JSON.stringify(releaseFixture(assets, tag, repo)),
   });
 }
 
@@ -161,7 +155,10 @@ export async function sessionCookie(overrides?: {
   return `dl_session=${token}`;
 }
 
-export function authHeaders(cookie: string, extra?: Record<string, string>): Record<string, string> {
+export function authHeaders(
+  cookie: string,
+  extra?: Record<string, string>,
+): Record<string, string> {
   return { cookie, ...extra };
 }
 
@@ -201,27 +198,25 @@ export async function adminCookie(token = TEST_ADMIN_TOKEN): Promise<string> {
 /** Performs one authorized download against a mocked GitHub. */
 export async function performDownload(
   asset = 'app-1.0.0.zip',
-  options: { range?: string; cookie?: string } = {},
+  options: { range?: string; cookie?: string; repo?: string } = {},
 ): Promise<Response> {
-  registerRelease([{ name: asset }]);
+  const repo = options.repo ?? REPO;
+  registerRelease([{ name: asset }], 'v1.0.0', repo);
 
   const location =
     'https://release-assets.githubusercontent.com/github-production-release-asset/1/2?token=abc';
-  route('github.com', githubAssetPath(asset), {
+  route('github.com', githubAssetPath(asset, 'v1.0.0', repo), {
     status: 302,
     headers: { location },
   });
-  routeWhere(
-    (url) => url.hostname === 'release-assets.githubusercontent.com',
-    {
-      status: 200,
-      headers: { 'content-type': 'application/zip' },
-      body: 'payload',
-    },
-  );
+  routeWhere((url) => url.hostname === 'release-assets.githubusercontent.com', {
+    status: 200,
+    headers: { 'content-type': 'application/zip' },
+    body: 'payload',
+  });
 
   const headers = authHeaders(options.cookie ?? (await sessionCookie()));
   if (options.range) headers.range = options.range;
 
-  return SELF.fetch(`${ORIGIN}/dl/${REPO}/${asset}`, { headers });
+  return SELF.fetch(`${ORIGIN}/dl/${repo}/${asset}`, { headers });
 }

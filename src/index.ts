@@ -3,35 +3,36 @@
  * valid signed session, except the verification endpoint and public assets.
  */
 
-import { APP_JS, STYLE_CSS } from './assets';
 import { handleAdmin } from './admin';
-import { buildClearCookie, readCookie, SESSION_COOKIE, sessionSecretUsable, subjectFor, verifySession, type Session } from './lib/auth';
-import { matchRepo, parseRepoList, pathSegments, safeNextPath } from './lib/security';
+import { APP_JS, STYLE_CSS } from './assets';
 import { handleDownload } from './download';
+import {
+  buildClearCookie,
+  readCookie,
+  SESSION_COOKIE,
+  type Session,
+  sessionSecretUsable,
+  subjectFor,
+  verifySession,
+} from './lib/auth';
+import {
+  methodNotAllowed as httpMethodNotAllowed,
+  notFound as httpNotFound,
+  jsonResponse,
+  textResponse,
+} from './lib/http';
+import { requestLogContext } from './lib/log';
+import { matchRepo, parseRepoList, pathSegments, safeNextPath } from './lib/security';
 import { loadRelease } from './release';
+import { type RepoView, renderConfigError, renderGate, renderHome } from './ui';
 import { handleVerify } from './verify';
-import { renderConfigError, renderGate, renderHome, type RepoView } from './ui';
-
-function jsonResponse(data: unknown, status = 200, extraHeaders?: HeadersInit): Response {
-  const headers = new Headers(extraHeaders);
-  headers.set('content-type', 'application/json; charset=utf-8');
-  headers.set('cache-control', 'no-store');
-  return new Response(JSON.stringify(data), { status, headers });
-}
-
-function textResponse(text: string, status: number, contentType: string): Response {
-  return new Response(text, {
-    status,
-    headers: { 'content-type': contentType, 'cache-control': 'no-store' },
-  });
-}
 
 function methodNotAllowed(allow = 'GET, HEAD, POST'): Response {
-  return jsonResponse({ error: 'method_not_allowed' }, 405, { allow });
+  return httpMethodNotAllowed(allow, 'json');
 }
 
 function notFound(): Response {
-  return jsonResponse({ error: 'not_found' }, 404);
+  return httpNotFound('json');
 }
 
 function wantsHtml(request: Request): boolean {
@@ -58,13 +59,17 @@ async function homePage(views: RepoView[], session: Session): Promise<Response> 
   return renderHome({ views, sessionMinutes: remaining });
 }
 
-async function buildViews(env: Env, repos: readonly string[]): Promise<RepoView[]> {
-  const views: RepoView[] = [];
-  for (const repo of repos) {
-    const result = await loadRelease(env, repo);
-    views.push({ repo, info: result.info, failure: result.failure });
-  }
-  return views;
+async function buildViews(
+  env: Env,
+  repos: readonly string[],
+  context: Record<string, unknown>,
+): Promise<RepoView[]> {
+  return Promise.all(
+    repos.map(async (repo) => {
+      const result = await loadRelease(env, repo, context);
+      return { repo, info: result.info, failure: result.failure };
+    }),
+  );
 }
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -106,7 +111,7 @@ function shouldUpgradeToHttps(request: Request, url: URL): boolean {
   return false;
 }
 
-async function route(request: Request, env: Env): Promise<Response> {
+async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   const method = request.method.toUpperCase();
   const pathname = url.pathname;
@@ -177,7 +182,7 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     const session = await readSession(request, env);
     if (!session) return renderGate({ siteKey: env.TURNSTILE_SITE_KEY, next: '/' });
-    return homePage(await buildViews(env, repos), session);
+    return homePage(await buildViews(env, repos, requestLogContext(request)), session);
   }
 
   if (pathname === '/api/releases') {
@@ -187,7 +192,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!session) return jsonResponse({ error: 'verification_required' }, 401);
 
     const payload: Array<Record<string, unknown>> = [];
-    for (const view of await buildViews(env, repos)) {
+    for (const view of await buildViews(env, repos, requestLogContext(request))) {
       const info = view.info;
       if (!info) {
         payload.push({
@@ -220,20 +225,23 @@ async function route(request: Request, env: Env): Promise<Response> {
     const session = await readSession(request, env);
     if (!session) {
       if (wantsHtml(request)) {
-        return renderGate({ siteKey: env.TURNSTILE_SITE_KEY, next: safeNextPath(`${pathname}${url.search}`, url.origin) });
+        return renderGate({
+          siteKey: env.TURNSTILE_SITE_KEY,
+          next: safeNextPath(`${pathname}${url.search}`, url.origin),
+        });
       }
       return jsonResponse({ error: 'verification_required' }, 401);
     }
 
     const parts = pathSegments(pathname);
-    if (!parts || parts.length !== 4) return notFound();
+    if (parts?.length !== 4) return notFound();
     const [head, owner, repo, asset] = parts;
     if (head !== 'dl' || !owner || !repo || !asset) return notFound();
 
     const canonical = matchRepo(repos, owner, repo);
     if (!canonical) return jsonResponse({ error: 'repo_not_allowed' }, 404);
 
-    return handleDownload(request, env, canonical, asset);
+    return handleDownload(request, env, ctx, canonical, asset);
   }
 
   return notFound();
@@ -263,11 +271,11 @@ function finalize(request: Request, response: Response): Response {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
-      return finalize(request, await route(request, env));
+      return finalize(request, await route(request, env, ctx));
     } catch (error) {
-      console.error('unhandled worker error', error);
+      console.error('unhandled worker error', requestLogContext(request), error);
       return finalize(request, jsonResponse({ error: 'internal_error' }, 500));
     }
   },
