@@ -27,12 +27,12 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
-    "@cloudflare/vitest-plugin": "^1.4.7",
-    "@vitest/coverage-v8": "^4.1.12",
+    "@cloudflare/vitest-plugin": "^1.4.8",
+    "@vitest/coverage-v8": "^5.0.5",
     "@vitest/runner": "^4.1.12",
-    "@vitest/snapshot": "^4.1.12",
-    "typescript": "~5.9.3",
-    "vitest": "^4.1.12",
+    "@vitest/snapshot": "^5.0.5",
+    "typescript": "~7.0.2",
+    "vitest": "^5.0.5",
     "wrangler": "^4.152.0"
   }
 }
